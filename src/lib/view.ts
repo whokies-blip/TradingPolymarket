@@ -1,0 +1,51 @@
+import { config } from './config';
+import { computeGate, recentDemoRoi } from './engine';
+import { liveConfigured } from './live';
+import type { Store } from './store';
+import { FAMILY_LABEL, describe, score } from './strategies';
+import type { State } from './types';
+
+const fin = (x: number) => (Number.isFinite(x) ? x : null);
+
+/** What the dashboard is allowed to see: no secrets, no bulky training data. */
+export function publicView(state: State, store: Store) {
+  const cfg = config();
+  const now = Date.now() / 1000;
+  const strategies = state.strategies
+    .map((s) => {
+      const sc = score(s.stats);
+      return {
+        id: s.id, gen: s.gen, parent: s.parent ?? null, family: s.genes.family, familyLabel: FAMILY_LABEL[s.genes.family], summary: describe(s.genes),
+        n: s.stats.n, wins: s.stats.wins, roi: s.stats.n ? s.stats.sumRoi / s.stats.n : null, recentRoi: s.stats.n >= 2 ? sc.mean : null,
+        lcb: fin(sc.lcb), tstat: s.stats.n >= 2 ? fin(sc.tstat) : null, champion: s.id === state.championId,
+      };
+    })
+    .sort((a, b) => Number(b.champion) - Number(a.champion) || (b.lcb ?? -9) - (a.lcb ?? -9) || b.n - a.n);
+  const account = (a: State['demo']) => ({ ...a, trades: a.trades.slice(0, 60), open: a.trades.filter((t) => t.status === 'open').length });
+  return {
+    now,
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+    tickCount: state.tickCount,
+    generation: state.generation,
+    settledWindows: state.settledWindows,
+    nextEvolveIn: Math.max(0, cfg.evolveEvery - (state.settledWindows - state.lastEvolveAt)),
+    championId: state.championId,
+    strategies,
+    demo: { ...account(state.demo), recentRoi: recentDemoRoi(state) },
+    live: account(state.live),
+    models: state.models,
+    control: { killSwitch: state.control.killSwitch, liveArmed: state.control.liveArmed },
+    snapshots: state.snapshots,
+    gate: computeGate(state, cfg, now),
+    log: state.log.slice(0, 60),
+    recent: state.recent.slice(0, 40),
+    settings: {
+      liveTrading: cfg.liveTrading, liveConfigured: liveConfigured(cfg), liveStakeUsd: cfg.liveStakeUsd, liveMaxDailyLoss: cfg.liveMaxDailyLoss,
+      adminRequired: !!cfg.adminToken, store: store.kind, durable: store.durable, kellyFraction: cfg.kellyFraction, maxStakePct: cfg.maxStakePct,
+      loopSeconds: cfg.loopSeconds, intervalSeconds: cfg.intervalSeconds, championMinTrades: cfg.championMinTrades,
+    },
+  };
+}
+
+export type View = ReturnType<typeof publicView>;

@@ -1,0 +1,264 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { View } from '@/lib/view';
+import type { Trade } from '@/lib/types';
+
+const usd = (x: number, d = 2) => `${x < 0 ? '−' : ''}${Math.abs(x).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d })} $`;
+const signed = (x: number) => `${x > 0 ? '+' : ''}${usd(x)}`;
+const pct = (x: number | null | undefined, d = 1) => (x === null || x === undefined ? '—' : `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).toFixed(d)} %`);
+const cents = (x: number | null | undefined) => (x === null || x === undefined ? '—' : `${(x * 100).toFixed(0)}¢`);
+const time = (t: number) => new Date(t * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const dateTime = (t: number) => new Date(t * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const cls = (x: number) => (x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+const SIDE = { up: 'Hausse', down: 'Baisse' } as const;
+
+function EquityChart({ points, start }: { points: [number, number][]; start: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 1000, H = 220, L = 56, R = 12, T = 12, B = 24;
+  if (points.length < 2) return <p className="muted">La courbe apparaîtra après les premiers trades réglés.</p>;
+  const ys = points.map((p) => p[1]).concat(start);
+  const lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo || 1) * 0.1;
+  const x = (i: number) => L + (i / (points.length - 1)) * (W - L - R);
+  const y = (v: number) => T + (1 - (v - (lo - pad)) / (hi - lo + 2 * pad)) * (H - T - B);
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+  const h = hover !== null ? points[hover] : null;
+  return (
+    <div className="chart" ref={ref}
+      onMouseMove={(e) => { const r = ref.current!.getBoundingClientRect(); const fx = ((e.clientX - r.left) / r.width) * W; setHover(Math.max(0, Math.min(points.length - 1, Math.round(((fx - L) / (W - L - R)) * (points.length - 1))))); }}
+      onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Évolution du capital, trade par trade">
+        {[lo, (lo + hi) / 2, hi].map((v, i) => (
+          <g key={i}>
+            <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="var(--muted)">{v.toFixed(0)}</text>
+          </g>
+        ))}
+        <line x1={L} x2={W - R} y1={y(start)} y2={y(start)} stroke="var(--muted)" strokeDasharray="4 4" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        <path d={path} fill="none" stroke="var(--series)" strokeWidth="2" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        {h && <line x1={x(hover!)} x2={x(hover!)} y1={T} y2={H - B} stroke="var(--muted)" strokeWidth="1" vectorEffect="non-scaling-stroke" />}
+        <text x={L} y={H - 6} fontSize="11" fill="var(--muted)">{dateTime(points[0][0])}</text>
+        <text x={W - R} y={H - 6} fontSize="11" textAnchor="end" fill="var(--muted)">{dateTime(points[points.length - 1][0])}</text>
+      </svg>
+      {h && <div className="tip" style={{ left: `${Math.min(80, (x(hover!) / W) * 100)}%` }}><b>{usd(h[1])}</b> · {dateTime(h[0])}</div>}
+    </div>
+  );
+}
+
+function Tile({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: string }) {
+  return (
+    <div className="card tile">
+      <div className="label">{label}</div>
+      <div className={`value ${tone || ''}`}>{value}</div>
+      {hint && <div className="hint">{hint}</div>}
+    </div>
+  );
+}
+
+function Trades({ trades }: { trades: Trade[] }) {
+  if (!trades.length) return <p className="muted">Aucun trade pour l’instant.</p>;
+  const status = { open: ['En cours', 'info'], won: ['Gagné', 'good'], lost: ['Perdu', 'bad'], void: ['Annulé', ''], failed: ['Échec', 'warn'] } as const;
+  return (
+    <div className="tablewrap">
+      <table>
+        <thead><tr><th>Heure</th><th>Marché</th><th>Pari</th><th className="num">Parts</th><th className="num">Prix</th><th className="num">Mise</th><th className="num">Avantage estimé</th><th>Résultat</th><th className="num">Gain / perte</th><th>Stratégie</th></tr></thead>
+        <tbody>
+          {trades.map((t) => (
+            <tr key={t.id}>
+              <td>{dateTime(t.openedAt)}</td><td>{t.asset.toUpperCase()}</td><td>{SIDE[t.side]}</td><td className="num">{t.shares.toFixed(1)}</td>
+              <td className="num">{(t.price * 100).toFixed(1)}¢</td><td className="num">{usd(t.cost)}</td><td className="num">{(t.edge * 100).toFixed(1)}¢</td>
+              <td><span className={`badge ${status[t.status][1]}`}>{status[t.status][0]}</span>{t.error ? <div className="muted">{t.error}</div> : null}</td>
+              <td className={`num ${cls(t.pnl ?? 0)}`}>{t.pnl === undefined ? '—' : signed(t.pnl)}</td><td className="muted">{t.strategyId}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function Page() {
+  const [v, setV] = useState<View | null>(null);
+  const [err, setErr] = useState('');
+  const [mode, setMode] = useState<'demo' | 'live'>('demo');
+  const [token, setToken] = useState('');
+  const [msg, setMsg] = useState('');
+  const [balance, setBalance] = useState<number | null>(null);
+  const [clock, setClock] = useState(Date.now() / 1000);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/state', { cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'Erreur');
+      setV(j); setErr('');
+    } catch (e) { setErr(String((e as Error).message)); }
+  }, []);
+  useEffect(() => {
+    try { setToken(localStorage.getItem('adminToken') || ''); } catch {}
+    load();
+    const a = setInterval(load, 5000), b = setInterval(() => setClock(Date.now() / 1000), 1000);
+    return () => { clearInterval(a); clearInterval(b); };
+  }, [load]);
+
+  const control = async (action: string, confirmText?: string) => {
+    if (confirmText && !window.confirm(confirmText)) return;
+    setMsg('');
+    try {
+      const r = await fetch('/api/control', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ action }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'Erreur');
+      if (action === 'balance') setBalance(j.balance);
+      setMsg(action === 'check' ? 'Jeton valide.' : 'Fait.');
+      load();
+    } catch (e) { setMsg(String((e as Error).message)); }
+  };
+
+  const acct = v ? v[mode] : null;
+  const champion = useMemo(() => v?.strategies.find((s) => s.champion) ?? null, [v]);
+  if (!v || !acct) return <main><h1>Polymarket 5 min</h1><p className="sub">{err || 'Chargement…'}</p></main>;
+
+  const stale = clock - v.updatedAt > 150;
+  const gateOpen = v.gate.every((g) => g.ok);
+  const roi = acct.staked > 0 ? acct.pnl / acct.staked : null;
+  const winRate = acct.nSettled ? acct.nWins / acct.nSettled : null;
+
+  return (
+    <main>
+      <div className="row between">
+        <div>
+          <h1>Polymarket 5 min — BTC &amp; ETH</h1>
+          <div className="sub">Trading automatisé auto-améliorant · génération {v.generation} · {v.settledWindows} marchés analysés</div>
+        </div>
+        <div className="row">
+          <span className={`badge ${stale ? 'bad' : 'good'}`}>{stale ? `Moteur inactif depuis ${Math.round((clock - v.updatedAt) / 60)} min` : `Moteur actif · ${time(v.updatedAt)}`}</span>
+          <div className="tabs" role="tablist">
+            <button role="tab" aria-selected={mode === 'demo'} onClick={() => setMode('demo')}>Démo</button>
+            <button role="tab" aria-selected={mode === 'live'} onClick={() => setMode('live')}>Production</button>
+          </div>
+        </div>
+      </div>
+      {err && <div className="banner">Connexion au serveur perdue : {err}</div>}
+      {!v.settings.durable && <div className="banner">Stockage non persistant : l’historique sera perdu entre deux exécutions. Connectez un stockage Vercel Blob ou Upstash Redis au projet.</div>}
+      {v.control.killSwitch && <div className="banner">Arrêt d’urgence actif : aucun nouveau trade (démo ou réel) n’est ouvert.</div>}
+
+      <section className="grid g2">
+        {(['btc', 'eth'] as const).map((a) => {
+          const s = v.snapshots[a];
+          if (!s) return <div className="card" key={a}><h2>{a.toUpperCase()}</h2><p className="muted">En attente du premier passage du moteur.</p></div>;
+          const left = Math.max(0, s.windowStart + 300 - clock);
+          const diff = s.spot / s.strike - 1;
+          return (
+            <div className="card" key={a}>
+              <div className="row between"><h2>{a.toUpperCase()} · fenêtre de {time(s.windowStart).slice(0, 5)}</h2><span className="badge">{left > 0 ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} restantes` : 'clôture…'}</span></div>
+              <div className="bar" aria-hidden><i style={{ width: `${Math.min(100, ((300 - left) / 300) * 100)}%` }} /></div>
+              <div className="kv" style={{ marginTop: 10 }}>
+                <span>Prix actuel</span><span>{usd(s.spot)}</span>
+                <span>Prix à battre (départ)</span><span>{usd(s.strike)} <span className={cls(diff)}>({pct(diff, 3)})</span></span>
+                <span>Probabilité de hausse — marché</span><span>{cents(s.mid)}</span>
+                <span>Probabilité de hausse — juste valeur</span><span>{cents(s.qFair)}</span>
+                <span>Probabilité de hausse — modèle appris</span><span>{s.qModel === null ? 'en apprentissage' : cents(s.qModel)}</span>
+                <span>Achat Hausse / Baisse</span><span>{cents(s.askUp)} / {cents(s.askDown)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      {mode === 'live' && (
+        <section className="grid g2">
+          <div className="card">
+            <div className="row between"><h2>Conditions avant tout trade réel</h2><span className={`badge ${gateOpen ? 'good' : 'warn'}`}>{gateOpen ? 'Toutes remplies — trading réel actif' : 'Trading réel bloqué'}</span></div>
+            {v.gate.map((g) => (
+              <div className="check" key={g.id}><span className={`mark ${g.ok ? 'pos' : 'neg'}`}>{g.ok ? '✓' : '✗'}</span><span style={{ flex: 1 }}>{g.label}</span><span className="muted">{g.detail}</span></div>
+            ))}
+          </div>
+          <div className="card">
+            <h2>Commandes</h2>
+            <p className="sub">Mise par trade : {usd(v.settings.liveStakeUsd)} · perte maximale par jour : {usd(v.settings.liveMaxDailyLoss)}. La production copie les trades du champion de la démo, uniquement quand toutes les conditions sont remplies.</p>
+            <div className="row" style={{ marginTop: 10 }}>
+              <input className="field" type="password" placeholder="Jeton administrateur" value={token} aria-label="Jeton administrateur"
+                onChange={(e) => { setToken(e.target.value); try { localStorage.setItem('adminToken', e.target.value); } catch {} }} />
+              <button className="btn" onClick={() => control('check')}>Vérifier</button>
+            </div>
+            <div className="row" style={{ marginTop: 10 }}>
+              {v.control.liveArmed
+                ? <button className="btn" onClick={() => control('disarm')}>Désarmer</button>
+                : <button className="btn primary" disabled={!v.settings.liveConfigured} onClick={() => control('arm', 'Armer le trading avec de l’argent réel ?')}>Armer le trading réel</button>}
+              {v.control.killSwitch
+                ? <button className="btn" onClick={() => control('resume')}>Lever l’arrêt d’urgence</button>
+                : <button className="btn danger" onClick={() => control('kill')}>Arrêt d’urgence</button>}
+              <button className="btn" disabled={!v.settings.liveConfigured} onClick={() => control('balance')}>Voir le solde</button>
+            </div>
+            {balance !== null && <p className="sub">Solde USDC disponible : <b>{usd(balance)}</b></p>}
+            {msg && <p className="sub">{msg}</p>}
+            {!v.settings.liveConfigured && <p className="muted">Le trading réel n’est pas configuré sur ce déploiement (voir le README).</p>}
+          </div>
+        </section>
+      )}
+
+      <section className="grid g4">
+        {mode === 'demo'
+          ? <Tile label="Capital fictif" value={usd(acct.bankroll)} hint={`départ ${usd(acct.startBankroll, 0)}${acct.open ? ` · ${acct.open} trade(s) en cours` : ''}`} />
+          : <Tile label="Argent engagé au total" value={usd(acct.staked)} hint={`${acct.open} trade(s) en cours`} />}
+        <Tile label="Gain / perte net" value={signed(acct.pnl)} tone={cls(acct.pnl)} hint={`dont frais payés ${usd(acct.fees)}`} />
+        <Tile label="Rendement par dollar misé" value={pct(roi)} tone={cls(roi ?? 0)} hint={`${usd(acct.staked, 0)} misés`} />
+        <Tile label="Trades gagnés" value={winRate === null ? '—' : `${(winRate * 100).toFixed(0)} %`} hint={`${acct.nWins} sur ${acct.nSettled} trades réglés`} />
+      </section>
+
+      <section className="card">
+        <h2>{mode === 'demo' ? 'Capital fictif, trade après trade' : 'Résultat cumulé en argent réel, trade après trade'}</h2>
+        <EquityChart points={acct.equity} start={acct.startBankroll} />
+        {mode === 'demo' && !champion && <p className="sub">Aucune stratégie n’a encore fait ses preuves (au moins {v.settings.championMinTrades} trades simulés et un résultat positif) : le compte démo reste à l’écart pendant que les {v.strategies.length} stratégies sont testées en parallèle.</p>}
+      </section>
+
+      <section className="card">
+        <div className="row between"><h2>{mode === 'demo' ? 'Trades de la démo' : 'Trades réels'}</h2>
+          {mode === 'demo' && <button className="btn" onClick={() => control('resetDemo', 'Remettre le compte démo à zéro ?')}>Remettre à zéro</button>}</div>
+        <Trades trades={acct.trades} />
+      </section>
+
+      <section className="card">
+        <div className="row between"><h2>Stratégies en compétition</h2><span className="sub">prochaine sélection dans {v.nextEvolveIn} marchés</span></div>
+        <p className="sub">Chaque stratégie parie fictivement 10 $ aux prix réels du carnet d’ordres. La meilleure, une fois prouvée, devient le champion et pilote le compte ; les perdantes sont remplacées par des variantes des meilleures.</p>
+        <div className="tablewrap">
+          <table>
+            <thead><tr><th>Stratégie</th><th>Type</th><th>Réglages</th><th className="num">Trades</th><th className="num">Gagnés</th><th className="num">Rendement moyen</th><th className="num">Rendement récent</th><th className="num">Fiabilité (t)</th></tr></thead>
+            <tbody>
+              {v.strategies.map((s) => (
+                <tr key={s.id}>
+                  <td>{s.id} {s.champion && <span className="badge good">Champion</span>}{s.parent && <div className="muted">issue de {s.parent}</div>}</td>
+                  <td>{s.familyLabel}</td><td className="muted">{s.summary}</td><td className="num">{s.n}</td>
+                  <td className="num">{s.n ? `${((s.wins / s.n) * 100).toFixed(0)} %` : '—'}</td>
+                  <td className={`num ${cls(s.roi ?? 0)}`}>{pct(s.roi)}</td><td className={`num ${cls(s.recentRoi ?? 0)}`}>{pct(s.recentRoi)}</td>
+                  <td className="num">{s.tstat === null ? '—' : s.tstat.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="grid g2">
+        <div className="card">
+          <h2>Qualité des prévisions</h2>
+          <p className="sub">Erreur moyenne de chaque prévision (plus bas = meilleur ; 0,693 = pile ou face). Pour gagner, il faut faire mieux que le marché.</p>
+          <div className="tablewrap"><table>
+            <thead><tr><th>Actif</th><th className="num">Marché</th><th className="num">Juste valeur</th><th className="num">Modèle appris</th><th className="num">Exemples appris</th></tr></thead>
+            <tbody>{(['btc', 'eth'] as const).map((a) => { const m = v.models[a]; return (
+              <tr key={a}><td>{a.toUpperCase()}</td><td className="num">{m.llMarket.toFixed(3)}</td><td className="num">{m.llFair.toFixed(3)}</td><td className="num">{m.llModel.toFixed(3)}</td><td className="num">{m.n}</td></tr>); })}</tbody>
+          </table></div>
+          <h2 style={{ marginTop: 16 }}>Derniers marchés</h2>
+          <div className="row" style={{ gap: 6 }}>{v.recent.slice(0, 24).map((r) => (
+            <span key={r.key} className={`badge ${r.outcome === 'up' ? 'good' : r.outcome === 'down' ? 'bad' : ''}`} title={`${time(r.start)} · ${r.shadows} stratégie(s) ont parié`}>{r.asset.toUpperCase()} {r.outcome === 'up' ? '▲ hausse' : r.outcome === 'down' ? '▼ baisse' : 'annulé'}</span>))}
+            {!v.recent.length && <span className="muted">Aucun marché réglé pour l’instant.</span>}</div>
+        </div>
+        <div className="card">
+          <h2>Journal</h2>
+          <div className="log">{v.log.map((l, i) => (<div key={i}><span className="muted">{dateTime(l.t)}</span> · {l.msg}</div>))}</div>
+        </div>
+      </section>
+    </main>
+  );
+}
