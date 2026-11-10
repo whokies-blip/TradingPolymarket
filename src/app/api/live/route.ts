@@ -1,24 +1,44 @@
 import { canTick } from '@/lib/auth';
-import { runTick } from '@/lib/engine';
-import { getStore } from '@/lib/store';
-import { publicView } from '@/lib/view';
+import { hub, joinSession } from '@/lib/hub';
+import type { LiveFrame } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 /**
- * Runs one real-time engine session on the server and streams what it sees, one JSON object per
- * line, to the dashboard that requested it: prices and order books five times a second, and the
- * full view every five seconds. The dashboard reconnects when the session ends, so the engine keeps
- * running for as long as the page stays open — no scheduler needed.
+ * The dashboard's window onto the real-time engine.
+ *
+ *  GET /api/live           joins the engine session running on this server (starting one if there is
+ *                          none) and streams it, one JSON object per line: prices and order books
+ *                          five times a second. The request stays open until the session ends, which
+ *                          is also what keeps the session alive.
+ *  GET /api/live?poll=1    returns at once the frames produced since `since` and, every five seconds,
+ *                          the full dashboard. Works even where long-lived responses are buffered or cut.
+ *
+ * The dashboard uses both at once and shows whichever data arrives.
  */
 export async function GET(req: Request) {
   if (!canTick(req)) return Response.json({ error: 'Jeton administrateur requis.' }, { status: 401 });
-  const store = getStore();
-  const encoder = new TextEncoder();
-  const abort = new AbortController();
-  req.signal.addEventListener('abort', () => abort.abort());
+  const params = new URL(req.url).searchParams;
 
+  if (params.has('poll')) {
+    const since = Number(params.get('since')) || 0;
+    const viewAt = Number(params.get('v')) || 0;
+    return Response.json(
+      { running: !!hub.done, sid: hub.sid, now: Date.now() / 1000, frames: hub.frames.filter((f) => f.t > since).slice(-12), viewAt: hub.viewAt, view: hub.view && hub.viewAt > viewAt ? hub.view : undefined },
+      { headers: { 'cache-control': 'no-store' } },
+    );
+  }
+
+  const { sid, attached, done } = joinSession();
+  const encoder = new TextEncoder();
+  let listener: ((frame: LiveFrame) => void) | null = null;
+  let beat: ReturnType<typeof setInterval> | null = null;
+  const leave = () => {
+    if (listener) hub.listeners.delete(listener);
+    if (beat) clearInterval(beat);
+    listener = null;
+  };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let open = true;
@@ -28,30 +48,26 @@ export async function GET(req: Request) {
           controller.enqueue(encoder.encode(JSON.stringify(frame) + '\n'));
         } catch {
           open = false;
-          abort.abort(); // the viewer left: end the session cleanly
+          leave(); // this viewer left; the session carries on for the others and ends by itself
         }
       };
-      let n = 0;
-      send({ type: 'hello' });
-      runTick({
-        signal: abort.signal,
-        // Five times a second: prices and order books. Every five seconds: the whole dashboard.
-        onLive: (frame) => send({ type: 'live', ...frame }),
-        onFrame: (state) => {
-          if (n++ % 5 === 0) send({ type: 'view', view: publicView(state, store) });
-        },
-      })
+      send({ type: 'hello', sid, attached });
+      listener = (frame) => send({ type: 'live', ...frame });
+      hub.listeners.add(listener);
+      beat = setInterval(() => send({ type: 'beat' }), 10000);
+      void done
         .then((result) => send({ type: 'end', ...result }))
         .catch((e) => send({ type: 'end', ok: false, error: String((e as Error)?.message || e) }))
         .finally(() => {
           open = false;
+          leave();
           try {
             controller.close();
           } catch {}
         });
     },
     cancel() {
-      abort.abort();
+      leave();
     },
   });
   return new Response(stream, { headers: { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no' } });

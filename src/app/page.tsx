@@ -176,6 +176,7 @@ export default function Page() {
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState<LiveFrame | null>(null);
   const [fps, setFps] = useState(0);
+  const [link, setLink] = useState<{ stream: boolean; poll: boolean; age: number | null } | null>(null);
   const hist = useRef<{ btc: Hist; eth: Hist; dir: { btc: number; eth: number }; frames: number }>({ btc: [], eth: [], dir: { btc: 0, eth: 0 }, frames: 0 });
   const [engine, setEngine] = useState<Engine>('off');
 
@@ -217,67 +218,104 @@ export default function Page() {
     return () => { clearInterval(a); clearInterval(b); clearInterval(c); };
   }, [load]);
 
-  // The engine runs on the server for as long as this page keeps a live session open:
-  // each session lasts about five minutes, and we reconnect as soon as one ends.
+  // The engine runs on the server; this page keeps it running and shows what it sees.
+  // Data arrives by two routes at once, and whichever works is used:
+  //  - a long streamed response (also what keeps the server session alive),
+  //  - a short request every second (works even where long responses are buffered or cut).
+  // Reconnecting never starts a second session: the server attaches us to the one already running.
   useEffect(() => {
-    if (!running) { setEngine('off'); setLive(null); return; }
+    if (!running) { setEngine('off'); setLive(null); setLink(null); return; }
     const abort = new AbortController();
+    const headers = { authorization: `Bearer ${token}` };
+    const queue: LiveFrame[] = [];
+    let since = 0, viewAt = 0, lastFrame = 0, started = Date.now(), streamOpen = false, streamTried = 0, streamOk = 0, pollOk = 0, pause = 0;
     let wake: { release: () => Promise<void> } | null = null;
     (navigator as unknown as { wakeLock?: { request: (t: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').then((w) => { wake = w; }).catch(() => {});
-    const wait = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); abort.signal.addEventListener('abort', () => { clearTimeout(t); r(); }); });
-    (async () => {
-      while (!abort.signal.aborted) {
-        let pause = 1000;
-        try {
-          setEngine((e) => (e === 'live' ? e : 'connecting'));
-          const res = await fetch('/api/live', { headers: { authorization: `Bearer ${token}` }, signal: abort.signal, cache: 'no-store' });
-          if (res.status === 401) { setEngine('denied'); setRunning(false); try { localStorage.setItem('engineOn', '0'); } catch {} return; }
-          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let nl: number;
-            while ((nl = buffer.indexOf('\n')) >= 0) {
-              const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
-              if (!line) continue;
+    setEngine('connecting');
+
+    const accept = (f: LiveFrame, via: 'stream' | 'poll') => {
+      if (via === 'stream') streamOk = Date.now(); else pollOk = Date.now();
+      if (!(f.t > since)) return; // already received by the other route
+      since = f.t;
+      lastFrame = Date.now();
+      queue.push(f);
+    };
+    const denied = () => { setEngine('denied'); setRunning(false); try { localStorage.setItem('engineOn', '0'); } catch {} };
+
+    const openStream = async () => {
+      streamOpen = true; streamTried = Date.now();
+      try {
+        const res = await fetch('/api/live', { headers, signal: abort.signal, cache: 'no-store' });
+        if (res.status === 401) return denied();
+        if (!res.ok || !res.body) return;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+            if (!line) continue;
+            try {
               const f = JSON.parse(line);
-              if (f.type === 'view') { setV(f.view); setErr(''); setEngine('live'); }
-              else if (f.type === 'live') {
-                const hs = hist.current;
-                hs.frames++;
-                // A new session starts by sending the last two minutes, so the chart is full at once.
-                if (f.history) for (const k of ['btc', 'eth'] as const) {
-                  const known = hs[k].length ? hs[k][hs[k].length - 1][0] : 0;
-                  if (f.history[k]?.length && f.t - known > 3) hs[k] = f.history[k].filter((p: [number, number]) => p[0] < f.t);
-                }
-                for (const k of ['btc', 'eth'] as const) {
-                  const spot = f.assets[k]?.spot;
-                  if (typeof spot !== 'number') continue;
-                  const prev = hs[k][hs[k].length - 1];
-                  if (prev && spot !== prev[1]) hs.dir[k] = spot > prev[1] ? 1 : -1;
-                  hs[k].push([f.t, spot]);
-                  if (hs[k].length > 900) hs[k].splice(0, hs[k].length - 800);
-                }
-                setLive(f); setEngine('live');
-              }
-              else if (f.type === 'end') {
-                if (f.busy) { setEngine('busy'); pause = 15000; }
-                else if (f.mode !== 'realtime') { setEngine('error'); pause = 5000; }
-              }
-            }
+              if (f.type === 'live') accept(f, 'stream');
+              else if (f.type === 'end' && f.busy) pause = Date.now() + 15000; // another server holds the session
+            } catch { /* a damaged line must never stop the stream */ }
           }
-        } catch {
-          if (abort.signal.aborted) break;
-          setEngine('error'); pause = 5000;
         }
-        await wait(pause);
+      } catch { /* cut or refused: the short requests carry on, and we reopen below */ }
+      finally { streamOpen = false; }
+    };
+
+    const poll = async () => {
+      try {
+        const r = await fetch(`/api/live?poll=1&since=${since}&v=${viewAt}`, { headers, signal: abort.signal, cache: 'no-store' });
+        if (r.status === 401) return denied();
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.view) { viewAt = j.viewAt; setV(j.view); setErr(''); }
+        if (j.running) pollOk = Date.now(); // this route reaches the running session
+        for (const f of j.frames as LiveFrame[]) accept(f, 'poll');
+      } catch { /* next second */ }
+    };
+
+    // Every second: fetch what is new, and make sure a session is running.
+    const tick = setInterval(() => {
+      if (abort.signal.aborted) return;
+      void poll();
+      const quiet = Date.now() - Math.max(lastFrame, started);
+      if (!streamOpen && Date.now() > pause && Date.now() - streamTried > 3000) void openStream();
+      setEngine(Date.now() - lastFrame < 4000 ? 'live' : Date.now() < pause ? 'busy' : quiet > 12000 ? 'error' : 'connecting');
+      setLink({ stream: Date.now() - streamOk < 4000, poll: Date.now() - pollOk < 4000, age: lastFrame ? (Date.now() - lastFrame) / 1000 : null });
+    }, 1000);
+
+    // Five times a second: show the next frame (a short buffer keeps the motion smooth).
+    const play = setInterval(() => {
+      if (queue.length > 8) queue.splice(0, queue.length - 4); // never lag far behind
+      const f = queue.shift();
+      if (!f) return;
+      const hs = hist.current;
+      hs.frames++;
+      if (f.history) for (const k of ['btc', 'eth'] as const) {
+        const known = hs[k].length ? hs[k][hs[k].length - 1][0] : 0;
+        if (f.history[k]?.length && f.t - known > 3) hs[k] = f.history[k].filter((p) => p[0] < f.t);
       }
-    })();
-    return () => { abort.abort(); wake?.release().catch(() => {}); setTimeout(load, 1500); };
+      for (const k of ['btc', 'eth'] as const) {
+        const spot = f.assets[k]?.spot;
+        if (typeof spot !== 'number') continue;
+        const prev = hs[k][hs[k].length - 1];
+        if (prev && spot !== prev[1]) hs.dir[k] = spot > prev[1] ? 1 : -1;
+        hs[k].push([f.t, spot]);
+        if (hs[k].length > 900) hs[k].splice(0, hs[k].length - 800);
+      }
+      setLive(f);
+    }, 200);
+
+    void openStream();
+    return () => { abort.abort(); clearInterval(tick); clearInterval(play); wake?.release().catch(() => {}); setTimeout(load, 1500); };
   }, [running, token, load]);
 
   const toggleEngine = () => {
@@ -306,8 +344,8 @@ export default function Page() {
 
   const stale = engine !== 'live' && clock - v.updatedAt > 150;
   const engineLabel: Record<Engine, string> = {
-    off: 'Moteur à l’arrêt', connecting: 'Connexion au moteur…', live: 'Moteur actif · temps réel', busy: 'Une session est déjà en cours sur le serveur : reprise automatique à sa fin (5 minutes au plus)',
-    error: 'Flux interrompu, nouvelle tentative…', denied: 'Jeton administrateur refusé',
+    off: 'Moteur à l’arrêt', connecting: 'Connexion au moteur…', live: 'Moteur actif · temps réel', busy: 'Une session est déjà en cours sur un autre serveur : reprise automatique à sa fin (5 minutes au plus)',
+    error: 'Aucune donnée reçue du serveur, nouvelles tentatives en cours…', denied: 'Jeton administrateur refusé',
   };
   const gateOpen = v.gate.every((g) => g.ok);
   const roi = acct.staked > 0 ? acct.pnl / acct.staked : null;
@@ -343,22 +381,25 @@ export default function Page() {
               <button className={`btn ${running ? '' : 'primary'}`} disabled={!running && v.settings.adminRequired && !token} onClick={toggleEngine}>{running ? 'Arrêter le moteur' : 'Démarrer le moteur'}</button>
             </div>
           </div>
-          {(running || engine === 'denied') && <div className="sub" style={{ marginTop: 8 }}><span className={`badge ${engine === 'live' ? 'good' : engine === 'denied' || engine === 'error' ? 'bad' : 'warn'}`}>{engineLabel[engine]}</span></div>}
+          {(running || engine === 'denied') && <div className="sub" style={{ marginTop: 8 }}>
+            <span className={`badge ${engine === 'live' ? 'good' : engine === 'denied' || engine === 'error' ? 'bad' : 'warn'}`}>{engineLabel[engine]}</span>
+            {link && <span className="muted"> · flux continu : {link.stream ? 'reçu' : 'non reçu'} · requêtes courtes : {link.poll ? 'reçues' : 'non reçues'} · dernière donnée : {link.age === null ? 'aucune' : `il y a ${link.age.toFixed(1).replace('.', ',')} s`}</span>}
+          </div>}
         </section>
       )}
       {err && <div className="banner">Connexion au serveur perdue : {err}</div>}
       {!v.settings.durable && <div className="banner">Stockage non persistant : l’historique sera perdu entre deux exécutions. Connectez un stockage Vercel Blob ou Upstash Redis au projet.</div>}
       {v.control.killSwitch && <div className="banner">Arrêt d’urgence actif : aucun nouveau trade (démo ou réel) n’est ouvert.</div>}
 
-      {live && engine === 'live' && (
+      {live && running && (
         <section>
-          <div className="sub" style={{ marginBottom: 8 }}><span className="live-dot" aria-hidden />En direct depuis le serveur · {fps} mises à jour par seconde</div>
+          <div className="sub" style={{ marginBottom: 8 }}><span className="live-dot" aria-hidden />En direct depuis le serveur · {fps} mises à jour par seconde{engine !== 'live' ? ' · en attente de nouvelles données…' : ''}</div>
           <div className="grid g2">
             {(['btc', 'eth'] as const).map((k) => <LiveMarket key={k} asset={k} a={live.assets[k]} start={live.windowStart} now={live.t} hist={hist.current[k]} dir={hist.current.dir[k]} />)}
           </div>
         </section>
       )}
-      {!(live && engine === 'live') && <section className="grid g2">
+      {!(live && running) && <section className="grid g2">
         {(['btc', 'eth'] as const).map((a) => {
           const s = v.snapshots[a];
           if (!s) return <div className="card" key={a}><h2>{a.toUpperCase()}</h2><p className="muted">En attente du premier passage du moteur.</p></div>;
