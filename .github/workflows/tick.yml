@@ -1,0 +1,27 @@
+# Moteur de secours pour le forfait Vercel Hobby (qui n'autorise qu'un cron par jour) :
+# appelle le moteur toutes les 15 secondes. Inutile sur Vercel Pro (cron à la minute).
+name: tick
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: tick
+  cancel-in-progress: false
+jobs:
+  tick:
+    if: vars.TICK_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Appeler le moteur pendant ~10 minutes
+        env:
+          TICK_URL: ${{ vars.TICK_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          end=$((SECONDS + 585))
+          while [ $SECONDS -lt $end ]; do
+            curl -sS -m 20 -H "Authorization: Bearer $CRON_SECRET" "$TICK_URL/api/cron/tick?once=1" || true
+            echo
+            sleep 14
+          done

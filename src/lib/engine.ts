@@ -319,22 +319,26 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
     } catch (e) {
       if (!(e instanceof ConflictError)) throw e;
       const fresh = await store.read();
-      if (!fresh.state || fresh.state.lock?.id !== id) throw e;
+      if (!locked || !fresh.state || fresh.state.lock?.id !== id) throw e;
       applyControl(state!, cfg, fresh.state.control);
       etag = await store.write(state!, fresh.etag);
     }
   };
   applyControl(state, cfg, state.control);
-  state.lock = { at: nowSec(), id };
-  try {
-    state.updatedAt = nowSec();
-    etag = await store.write(state, etag);
-  } catch (e) {
-    if (e instanceof ConflictError) return { ok: true, busy: true, passes: 0, ms: Date.now() - began, store: store.kind };
-    throw e;
-  }
-
   const loopMs = Math.max(0, (opts.loopSeconds ?? cfg.loopSeconds) * 1000);
+  // A lock is taken (one extra write) whenever the run is long or real money is involved.
+  // Short paper-only runs rely on the final compare-and-swap instead: if two overlap, one is dropped.
+  const locked = loopMs > 0 || liveConfigured(cfg);
+  if (locked) {
+    state.lock = { at: nowSec(), id };
+    try {
+      state.updatedAt = nowSec();
+      etag = await store.write(state, etag);
+    } catch (e) {
+      if (e instanceof ConflictError) return { ok: true, busy: true, passes: 0, ms: Date.now() - began, store: store.kind };
+      throw e;
+    }
+  }
   let passes = 0;
   try {
     if (cfg.liveTrading && (!state.geo || nowSec() - state.geo.t > 600)) {
@@ -357,9 +361,13 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
   } catch (e) {
     log(state, 'error', `Erreur du moteur : ${String((e as Error)?.message || e).slice(0, 160)}`);
   }
-  await persist(); // still holding the lock, so dashboard changes can be merged
   state.lock = undefined;
-  await persist();
+  try {
+    await persist();
+  } catch (e) {
+    if (e instanceof ConflictError) return { ok: true, busy: true, passes, ms: Date.now() - began, store: store.kind };
+    throw e;
+  }
   return { ok: true, passes, ms: Date.now() - began, store: store.kind };
 }
 
