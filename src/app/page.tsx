@@ -8,6 +8,8 @@ const usd = (x: number, d = 2) => `${x < 0 ? '−' : ''}${Math.abs(x).toLocaleSt
 const signed = (x: number) => `${x > 0 ? '+' : ''}${usd(x)}`;
 const pct = (x: number | null | undefined, d = 1) => (x === null || x === undefined ? '—' : `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).toFixed(d)} %`);
 const centsSigned = (x: number | null | undefined) => (x === null || x === undefined ? '—' : `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).toFixed(1)}¢`);
+/** Order-book prices: whole cents normally, tenths of a cent near 0 and 100 where the market quotes them. */
+const tick = (p: number) => { const c = Math.round(p * 1000) / 10; return `${Number.isInteger(c) ? c.toFixed(0) : c.toFixed(1).replace('.', ',')}¢`; };
 const cents = (x: number | null | undefined) => (x === null || x === undefined ? '—' : `${(x * 100).toFixed(0)}¢`);
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const dateTime = (t: number) => new Date(t * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -119,11 +121,11 @@ function LiveMarket({ asset, a, start, now, hist, dir }: { asset: 'btc' | 'eth';
         <div className="book-title"><span>Carnet d’ordres Polymarket — « Hausse »</span><span>{a.bookAgeMs === null ? 'connexion…' : `mis à jour il y a ${a.bookAgeMs} ms`}</span></div>
         {a.asks.length === 0 && a.bids.length === 0 ? <div className="muted">Carnet vide (marché en cours de clôture ou d’ouverture).</div> : <>
           {[...a.asks].reverse().map(([p, n]) => (
-            <div className="book-row ask" key={`a${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{(p * 100).toFixed(0)}¢</b></span><span className="side">à vendre</span><span>{shares(n)} parts</span></div>
+            <div className="book-row ask" key={`a${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{tick(p)}</b></span><span className="side">à vendre</span><span>{shares(n)} parts</span></div>
           ))}
-          <div className="book-spread">{spread === null ? 'un seul côté coté' : `écart ${(spread * 100).toFixed(0)}¢ entre le meilleur vendeur et le meilleur acheteur`}</div>
+          <div className="book-spread">{spread === null ? 'un seul côté coté' : `écart ${tick(spread)} entre le meilleur vendeur et le meilleur acheteur`}</div>
           {a.bids.map(([p, n]) => (
-            <div className="book-row bid" key={`b${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{(p * 100).toFixed(0)}¢</b></span><span className="side">à acheter</span><span>{shares(n)} parts</span></div>
+            <div className="book-row bid" key={`b${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{tick(p)}</b></span><span className="side">à acheter</span><span>{shares(n)} parts</span></div>
           ))}
         </>}
       </div>
