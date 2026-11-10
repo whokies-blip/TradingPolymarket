@@ -2,7 +2,7 @@ import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy } from './live';
 import { mulberry32, round } from './math';
 import { computeFeatures, fairProb, featureVector, learn, newModel, predict, type Features } from './model';
-import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindow, simulateBuy, type Book, type Level } from './polymarket';
+import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
 import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
@@ -47,8 +47,8 @@ export function migrate(state: State | null, cfg: Config): State {
 }
 
 export function log(state: State, level: LogEntry['level'], msg: string, now = nowSec()) {
-  const last = state.log[0];
-  if (last && last.msg === msg && now - last.t < 600) return;
+  // Do not repeat a message already shown in the last 10 minutes (errors tend to come in bursts).
+  if (state.log.slice(0, 8).some((l) => l.msg === msg && now - l.t < 600)) return;
   state.log.unshift({ t: now, level, msg });
   if (state.log.length > 120) state.log.length = 120;
 }
@@ -84,6 +84,32 @@ export function computeGate(state: State, cfg: Config, now = nowSec()): GateChec
     { id: 'demo', label: 'Compte démo rentable (50 derniers trades, ≥ 30)', ok: demo.count >= 30 && demo.roi > 0, detail: `${demo.count} trades, ROI ${(demo.roi * 100).toFixed(1)} %` },
     { id: 'loss', label: `Perte du jour < ${cfg.liveMaxDailyLoss} $`, ok: lossToday < cfg.liveMaxDailyLoss, detail: `${lossToday.toFixed(2)} $ perdus aujourd'hui` },
   ];
+}
+
+// ------------------------------------------------------------------ market catalogue
+
+const AHEAD = 12; // one hour of 5-minute markets
+
+/**
+ * The market for `start`, from the local catalogue when possible. The catalogue is topped up an hour
+ * ahead in a single request, so the engine keeps trading through a short refusal or outage.
+ */
+async function ensureWindow(state: State, asset: Asset, start: number): Promise<WindowRec | null> {
+  const have = (s: number) => !!state.windows[`${asset}-${s}`];
+  const current = state.windows[`${asset}-${start}`];
+  const future = Array.from({ length: AHEAD }, (_, i) => start + (i + 1) * WINDOW);
+  if (current && future.filter(have).length >= AHEAD / 2) return current;
+  try {
+    const wanted = [start, ...future].filter((s) => !have(s));
+    for (const w of await fetchWindows(asset, wanted)) state.windows[w.key] = w;
+  } catch (e) {
+    const msg = String((e as Error)?.message || e);
+    log(state, 'warn', msg.includes('HTTP 403')
+      ? 'Polymarket refuse les requêtes de cette connexion (HTTP 403). Causes habituelles : pays où Polymarket est restreint, VPN ou réseau filtré. Lancez « npm run check » pour le détail.'
+      : `Catalogue Polymarket : ${msg.slice(0, 120)}`);
+    if (!current) throw e;
+  }
+  return state.windows[`${asset}-${start}`] ?? null;
 }
 
 // ------------------------------------------------------------------ one asset
@@ -162,15 +188,10 @@ function openDemo(state: State, cfg: Config, win: WindowRec, strat: Strategy, si
 async function processAsset(state: State, cfg: Config, asset: Asset, persist: () => Promise<void>): Promise<void> {
   const t0 = nowSec();
   const start = windowStartOf(t0);
-  const key = `${asset}-${start}`;
-  let win: WindowRec | undefined = state.windows[key];
+  const win = await ensureWindow(state, asset, start);
   if (!win) {
-    const fetched = await fetchWindow(asset, start);
-    if (!fetched) {
-      log(state, 'warn', `Marché ${asset.toUpperCase()} introuvable pour la fenêtre en cours.`);
-      return;
-    }
-    win = state.windows[key] = fetched;
+    log(state, 'warn', `Marché ${asset.toUpperCase()} introuvable pour la fenêtre en cours.`);
+    return;
   }
 
   const asked = Date.now();
@@ -345,20 +366,21 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   let bookStart = -1;
   let rolling = false;
   let rollAfter = 0;
+  let rollDelay = 2000;
   const roll = async (start: number) => {
-    const wins = await Promise.all(ASSETS.map(async (a) => state.windows[`${a}-${start}`] ?? (await fetchWindow(a, start))));
+    const wins = await Promise.all(ASSETS.map((a) => ensureWindow(state, a, start)));
     const tokens: string[] = [];
     wins.forEach((w, i) => {
       if (!w) return log(state, 'warn', `Marché ${ASSETS[i].toUpperCase()} introuvable pour la fenêtre en cours.`);
-      state.windows[w.key] = w;
       tokens.push(w.upToken, w.downToken);
     });
-    if (tokens.length === 0) return;
+    if (tokens.length === 0) throw new Error('aucun marché disponible');
     const next = new BookFeed(tokens);
     await next.start();
     book?.close();
     book = next;
     bookStart = start;
+    rollDelay = 2000;
   };
 
   const retryAt = new Map<string, number>();
@@ -448,7 +470,9 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
       const feed = book as BookFeed | null;
       if ((bookStart !== start || !feed || feed.closed) && !rolling && Date.now() >= rollAfter) {
         rolling = true;
-        rollAfter = Date.now() + 2000; // if it fails, wait before reconnecting
+        // If it fails, wait before trying again — longer each time, so a refusal is not hammered.
+        rollAfter = Date.now() + rollDelay;
+        rollDelay = Math.min(rollDelay * 2, 60000);
         run(roll(start).finally(() => (rolling = false)));
       }
       if (feed && bookStart === start && feed.ready()) {

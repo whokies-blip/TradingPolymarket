@@ -13,6 +13,8 @@ Un ordinateur allumé fait tourner le moteur temps réel en continu, sans les li
 3. Le tableau de bord s'ouvre sur http://localhost:3000. Le terminal affiche l'état toutes les 30 secondes et chaque événement (trade, nouveau champion, problème).
 4. `Ctrl+C` arrête proprement. Tout l'historique est conservé dans `.data/state.json` et repris au prochain lancement.
 
+En cas de message d'erreur de connexion (par exemple « HTTP 403 » ou « injoignable »), lancez `npm run check` : il teste depuis votre ordinateur chaque service utilisé et indique lequel est bloqué. Polymarket restreint l'accès depuis certains pays et refuse souvent les VPN ; ce système ne contourne pas ces restrictions.
+
 `start-mac.command` empêche la mise en veille tant que le moteur tourne ; gardez le Mac branché et le capot ouvert. Options : `PORT=4000 npm run local` (autre port), `npm run local -- --no-dashboard` (moteur seul).
 
 Pour la Production en local, créer un fichier `.env.local` (jamais envoyé sur GitHub) avec `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, relancer, puis armer depuis l'onglet Production.

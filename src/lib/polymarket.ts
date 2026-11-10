@@ -25,10 +25,7 @@ async function gammaMarket(slug: string): Promise<GammaMarket | null> {
   return events?.[0]?.markets?.[0] ?? null;
 }
 
-/** Static description of one 5-minute market (tokens, fees, tick size). */
-export async function fetchWindow(asset: Asset, start: number): Promise<WindowRec | null> {
-  const slug = slugOf(asset, start);
-  const m = await gammaMarket(slug);
+function toWindow(asset: Asset, start: number, m: GammaMarket | undefined): WindowRec | null {
   if (!m?.clobTokenIds || !m.outcomes) return null;
   const tokens: string[] = JSON.parse(m.clobTokenIds);
   const outcomes: string[] = JSON.parse(m.outcomes);
@@ -38,7 +35,7 @@ export async function fetchWindow(asset: Asset, start: number): Promise<WindowRe
     key: `${asset}-${start}`,
     asset,
     start,
-    slug,
+    slug: slugOf(asset, start),
     conditionId: m.conditionId,
     upToken: tokens[up],
     downToken: tokens[1 - up],
@@ -50,6 +47,23 @@ export async function fetchWindow(asset: Asset, start: number): Promise<WindowRe
     shadows: [],
     obs: [],
   };
+}
+
+/**
+ * Static description (tokens, fees, tick size) of several 5-minute markets in ONE request.
+ * Markets are listed about a day ahead, so the engine fetches an hour's worth at a time
+ * and a short outage of the catalogue API goes unnoticed.
+ */
+export async function fetchWindows(asset: Asset, starts: number[]): Promise<WindowRec[]> {
+  if (starts.length === 0) return [];
+  const query = starts.map((s) => `slug=${slugOf(asset, s)}`).join('&');
+  const events = await getJson<{ slug?: string; markets?: GammaMarket[] }[]>(`${GAMMA}/events?${query}&limit=${starts.length}`, 6000);
+  const bySlug = new Map((events || []).map((e) => [e.slug, e.markets?.[0]]));
+  return starts.map((s) => toWindow(asset, s, bySlug.get(slugOf(asset, s)))).filter((w): w is WindowRec => w !== null);
+}
+
+export async function fetchWindow(asset: Asset, start: number): Promise<WindowRec | null> {
+  return (await fetchWindows(asset, [start]))[0] ?? null;
 }
 
 /**
