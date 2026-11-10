@@ -47,7 +47,9 @@ export const config = () => ({
   evalMs: Math.max(50, num('STREAM_EVAL_MS', 200)),
   /** Paper orders are checked against the live book this long after the decision (order travel time). */
   streamConfirmMs: num('STREAM_CONFIRM_MS', 500),
-  persistSeconds: Math.max(5, num('PERSIST_SECONDS', 30)),
+  /** Seconds between saves during a session. 0 = automatic: every 30 s, or only at the end of each
+   *  session on Vercel Blob, whose free quota of writes is small. */
+  persistSeconds: Math.max(0, num('PERSIST_SECONDS', 0)),
   // --- production (real money)
   liveTrading: bool('LIVE_TRADING'),
   privateKey: process.env.POLYMARKET_PRIVATE_KEY || '',

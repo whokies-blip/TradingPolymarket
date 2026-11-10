@@ -14,6 +14,8 @@ const dateTime = (t: number) => new Date(t * 1000).toLocaleString('fr-FR', { day
 const cls = (x: number) => (x > 0 ? 'pos' : x < 0 ? 'neg' : '');
 const SIDE = { up: 'Hausse', down: 'Baisse' } as const;
 
+type Engine = 'off' | 'connecting' | 'live' | 'busy' | 'error' | 'denied';
+
 function EquityChart({ points, start }: { points: [number, number][]; start: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
@@ -87,6 +89,8 @@ export default function Page() {
   const [msg, setMsg] = useState('');
   const [balance, setBalance] = useState<number | null>(null);
   const [clock, setClock] = useState(Date.now() / 1000);
+  const [running, setRunning] = useState(false);
+  const [engine, setEngine] = useState<Engine>('off');
 
   const load = useCallback(async () => {
     try {
@@ -96,12 +100,67 @@ export default function Page() {
       setV(j); setErr('');
     } catch (e) { setErr(String((e as Error).message)); }
   }, []);
+  const engineRef = useRef<Engine>('off');
+  engineRef.current = engine;
   useEffect(() => {
-    try { setToken(localStorage.getItem('adminToken') || ''); } catch {}
+    try { setToken(localStorage.getItem('adminToken') || ''); setRunning(localStorage.getItem('engineOn') === '1'); } catch {}
     load();
-    const a = setInterval(load, 5000), b = setInterval(() => setClock(Date.now() / 1000), 1000);
+    // While the live stream is connected it carries everything; otherwise poll the saved state.
+    const a = setInterval(() => { if (engineRef.current !== 'live') load(); }, 5000), b = setInterval(() => setClock(Date.now() / 1000), 1000);
     return () => { clearInterval(a); clearInterval(b); };
   }, [load]);
+
+  // The engine runs on the server for as long as this page keeps a live session open:
+  // each session lasts about five minutes, and we reconnect as soon as one ends.
+  useEffect(() => {
+    if (!running) { setEngine('off'); return; }
+    const abort = new AbortController();
+    let wake: { release: () => Promise<void> } | null = null;
+    (navigator as unknown as { wakeLock?: { request: (t: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').then((w) => { wake = w; }).catch(() => {});
+    const wait = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); abort.signal.addEventListener('abort', () => { clearTimeout(t); r(); }); });
+    (async () => {
+      while (!abort.signal.aborted) {
+        let pause = 1000;
+        try {
+          setEngine((e) => (e === 'live' ? e : 'connecting'));
+          const res = await fetch('/api/live', { headers: { authorization: `Bearer ${token}` }, signal: abort.signal, cache: 'no-store' });
+          if (res.status === 401) { setEngine('denied'); setRunning(false); try { localStorage.setItem('engineOn', '0'); } catch {} return; }
+          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buffer.indexOf('\n')) >= 0) {
+              const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+              if (!line) continue;
+              const f = JSON.parse(line);
+              if (f.type === 'view') { setV(f.view); setErr(''); setEngine('live'); }
+              else if (f.type === 'tick') { setV((prev) => (prev ? { ...prev, now: f.now, snapshots: f.snapshots } : prev)); setEngine('live'); }
+              else if (f.type === 'end') {
+                if (f.busy) { setEngine('busy'); pause = 15000; }
+                else if (f.mode !== 'realtime') { setEngine('error'); pause = 5000; }
+              }
+            }
+          }
+        } catch {
+          if (abort.signal.aborted) break;
+          setEngine('error'); pause = 5000;
+        }
+        await wait(pause);
+      }
+    })();
+    return () => { abort.abort(); wake?.release().catch(() => {}); setTimeout(load, 1500); };
+  }, [running, token, load]);
+
+  const toggleEngine = () => {
+    const next = !running;
+    setRunning(next);
+    try { localStorage.setItem('engineOn', next ? '1' : '0'); } catch {}
+  };
 
   const control = async (action: string, confirmText?: string) => {
     if (confirmText && !window.confirm(confirmText)) return;
@@ -121,7 +180,11 @@ export default function Page() {
   const bestCandidate = useMemo(() => v?.strategies.filter((s) => s.n >= 5 && s.tstat !== null).sort((x, y) => (y.tstat ?? 0) - (x.tstat ?? 0))[0] ?? null, [v]);
   if (!v || !acct) return <main><h1>Polymarket 5 min</h1><p className="sub">{err || 'Chargement…'}</p></main>;
 
-  const stale = clock - v.updatedAt > 150;
+  const stale = engine !== 'live' && clock - v.updatedAt > 150;
+  const engineLabel: Record<Engine, string> = {
+    off: 'Moteur à l’arrêt', connecting: 'Connexion au moteur…', live: 'Moteur actif · temps réel', busy: 'Moteur déjà piloté par une autre page ou un autre appareil',
+    error: 'Flux interrompu, nouvelle tentative…', denied: 'Jeton administrateur refusé',
+  };
   const gateOpen = v.gate.every((g) => g.ok);
   const roi = acct.staked > 0 ? acct.pnl / acct.staked : null;
   const winRate = acct.nSettled ? acct.nWins / acct.nSettled : null;
@@ -134,13 +197,31 @@ export default function Page() {
           <div className="sub">Trading automatisé auto-améliorant · génération {v.generation} · {v.settledWindows} marchés analysés</div>
         </div>
         <div className="row">
-          <span className={`badge ${stale ? 'bad' : 'good'}`}>{stale ? `Moteur inactif depuis ${Math.round((clock - v.updatedAt) / 60)} min` : `Moteur actif · ${time(v.updatedAt)}`}</span>
+          <span className={`badge ${engine === 'live' ? 'good' : stale ? 'bad' : 'good'}`}>{engine === 'live' ? 'Moteur actif · temps réel' : stale ? `Moteur inactif depuis ${Math.round((clock - v.updatedAt) / 60)} min` : `Moteur actif · ${time(v.updatedAt)}`}</span>
           <div className="tabs" role="tablist">
             <button role="tab" aria-selected={mode === 'demo'} onClick={() => setMode('demo')}>Démo</button>
             <button role="tab" aria-selected={mode === 'live'} onClick={() => setMode('live')}>Production</button>
           </div>
         </div>
       </div>
+      {!v.settings.managed && (
+        <section className="card" style={{ marginTop: 12 }}>
+          <div className="row between">
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <h2 style={{ marginBottom: 4 }}>Moteur temps réel</h2>
+              <div className="sub">Le moteur tourne sur le serveur tant que cette page reste ouverte : il suit le carnet d’ordres en continu et vous envoie ce qu’il voit, seconde par seconde. Fermez la page ou cliquez sur Arrêter pour le stopper.</div>
+            </div>
+            <div className="row">
+              {v.settings.adminRequired && (
+                <input className="field" type="password" placeholder="Jeton administrateur" value={token} aria-label="Jeton administrateur"
+                  onChange={(e) => { setToken(e.target.value); try { localStorage.setItem('adminToken', e.target.value); } catch {} }} />
+              )}
+              <button className={`btn ${running ? '' : 'primary'}`} disabled={!running && v.settings.adminRequired && !token} onClick={toggleEngine}>{running ? 'Arrêter le moteur' : 'Démarrer le moteur'}</button>
+            </div>
+          </div>
+          {(running || engine === 'denied') && <div className="sub" style={{ marginTop: 8 }}><span className={`badge ${engine === 'live' ? 'good' : engine === 'denied' || engine === 'error' ? 'bad' : 'warn'}`}>{engineLabel[engine]}</span></div>}
+        </section>
+      )}
       {err && <div className="banner">Connexion au serveur perdue : {err}</div>}
       {!v.settings.durable && <div className="banner">Stockage non persistant : l’historique sera perdu entre deux exécutions. Connectez un stockage Vercel Blob ou Upstash Redis au projet.</div>}
       {v.control.killSwitch && <div className="banner">Arrêt d’urgence actif : aucun nouveau trade (démo ou réel) n’est ouvert.</div>}
@@ -180,11 +261,7 @@ export default function Page() {
           <div className="card">
             <h2>Commandes</h2>
             <p className="sub">Mise par trade : {usd(v.settings.liveStakeUsd)} · perte maximale par jour : {usd(v.settings.liveMaxDailyLoss)}. La production copie les trades du champion de la démo, uniquement quand toutes les conditions sont remplies.</p>
-            <div className="row" style={{ marginTop: 10 }}>
-              <input className="field" type="password" placeholder="Jeton administrateur" value={token} aria-label="Jeton administrateur"
-                onChange={(e) => { setToken(e.target.value); try { localStorage.setItem('adminToken', e.target.value); } catch {} }} />
-              <button className="btn" onClick={() => control('check')}>Vérifier</button>
-            </div>
+            {v.settings.adminRequired && <p className="sub">Les commandes utilisent le jeton administrateur saisi en haut de page. <button className="btn" onClick={() => control('check')}>Vérifier le jeton</button></p>}
             <div className="row" style={{ marginTop: 10 }}>
               {v.control.liveArmed
                 ? <button className="btn" onClick={() => control('disarm')}>Désarmer</button>

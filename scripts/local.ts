@@ -18,6 +18,7 @@ for (const f of ['.env.local', '.env']) if (existsSync(f)) process.loadEnvFile(f
 // Local defaults: saving is free here, so save often; long sessions mean fewer reconnections.
 process.env.PERSIST_SECONDS ??= '5';
 process.env.TICK_LOOP_SECONDS ??= '900';
+process.env.LOCAL_RUNNER = '1'; // tells the dashboard the engine is already taken care of
 
 const args = new Set(process.argv.slice(2));
 const port = process.env.PORT || '3000';

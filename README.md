@@ -65,13 +65,15 @@ Conditions de la Production : `LIVE_TRADING=true`, portefeuille configuré, rég
 
 ## Déploiement Vercel
 
+Sur Vercel, le moteur temps réel tourne **sur les serveurs de Vercel** (qui gardent les connexions WebSocket vers Binance et Polymarket) et diffuse ce qu'il voit, seconde par seconde, au tableau de bord.
+
 1. Importer le dépôt dans Vercel (Next.js détecté automatiquement).
 2. Connecter un stockage au projet : **Vercel Blob** (privé) ou **Upstash Redis**. Sans stockage, l'historique n'est pas conservé.
 3. Définir `CRON_SECRET` et `ADMIN_TOKEN` (voir `.env.example` pour toutes les variables).
-4. **Déclenchement du moteur** — le temps réel demande une fonction qui tourne en permanence :
-   - **Vercel Pro** : remplacer le `schedule` de `vercel.json` par `* * * * *`. Chaque session dure ~5 minutes ; les appels en trop sont ignorés, et une session interrompue est relancée dans la minute. Comptez de l'ordre de 20 à 25 $ par mois d'usage (fonction active en continu), en plus de l'abonnement — estimation à vérifier sur votre facture.
-   - **Vercel Hobby** (un seul cron par jour, et un budget de calcul gratuit trop petit pour tourner 24 h/24) : le workflow `.github/workflows/tick.yml` enchaîne les sessions. Il s'active une fois présent sur la branche par défaut, avec la variable de dépôt `TICK_URL` (ex. `https://tradingpolymarket.vercel.app`) et le secret `CRON_SECRET`. À réserver à des essais de quelques heures par jour.
-5. **Stockage** — le moteur sauvegarde son état toutes les 30 s. Le quota gratuit de Vercel Blob (Hobby) est trop faible pour cela : utilisez Upstash Redis (offre gratuite suffisante) ou Vercel Pro.
+4. **Faire tourner le moteur** — deux façons :
+   - **Depuis le tableau de bord (tous forfaits)** : saisir le jeton administrateur puis cliquer sur « Démarrer le moteur ». Chaque session dure ~5 minutes et la page se reconnecte aussitôt : le moteur tourne tant que la page reste ouverte sur un appareil allumé, et s'arrête quand on la ferme.
+   - **En continu sans page ouverte (Vercel Pro)** : remplacer le `schedule` de `vercel.json` par `* * * * *`. Les appels en trop sont ignorés et une session interrompue est relancée dans la minute.
+5. **Budget** — une fonction active en permanence consomme le quota de calcul du compte (partagé avec vos autres projets). Sur Hobby, surveillez la page Usage de Vercel et ne laissez pas tourner 24 h/24. Le moteur ne sauvegarde qu'en fin de session sur Vercel Blob, pour ménager son quota d'écritures.
 
 Pour la Production, ajouter `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, puis armer depuis l'onglet Production.
 

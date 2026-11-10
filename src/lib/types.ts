@@ -169,7 +169,8 @@ export interface State {
   createdAt: number;
   updatedAt: number;
   tickCount: number;
-  lock?: { at: number; id: string };
+  /** Held by the running engine session; `ttl` seconds after `at` it is considered dead. */
+  lock?: { at: number; id: string; ttl?: number };
   generation: number;
   settledWindows: number;
   lastEvolveAt: number;

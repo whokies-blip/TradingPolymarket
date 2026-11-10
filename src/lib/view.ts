@@ -42,7 +42,7 @@ export function publicView(state: State, store: Store) {
     recent: state.recent.slice(0, 40),
     settings: {
       liveTrading: cfg.liveTrading, liveConfigured: liveConfigured(cfg), liveStakeUsd: cfg.liveStakeUsd, liveMaxDailyLoss: cfg.liveMaxDailyLoss,
-      adminRequired: !!cfg.adminToken, store: store.kind, durable: store.durable, kellyFraction: cfg.kellyFraction, maxStakePct: cfg.maxStakePct,
+      adminRequired: !!cfg.adminToken, managed: !!process.env.LOCAL_RUNNER, store: store.kind, durable: store.durable, kellyFraction: cfg.kellyFraction, maxStakePct: cfg.maxStakePct,
       loopSeconds: cfg.loopSeconds, intervalSeconds: cfg.intervalSeconds, championMinTrades: cfg.championMinTrades, championZ: cfg.championZ,
       liveMinTrades: cfg.liveMinTrades, liveMinTstat: cfg.liveMinTstat,
     },

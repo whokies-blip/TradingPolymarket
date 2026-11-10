@@ -356,7 +356,7 @@ export function improve(state: State, cfg: Config, now = nowSec()) {
  * book in memory, a decision every 200 ms. Paper orders are checked against the book half a second
  * later (the time a real order needs to arrive); real orders are sent immediately.
  */
-async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number, signal?: AbortSignal): Promise<number> {
+async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number, saveEvery: number, signal?: AbortSignal, onFrame?: (state: State) => void): Promise<number> {
   const series = Object.fromEntries(await Promise.all(ASSETS.map(async (a) => [a, await getSeries(a)] as const))) as Record<Asset, Series>;
   if (ASSETS.some((a) => series[a].source !== 'binance')) throw new Error('flux de prix principal indisponible');
   const spot = new SpotFeed();
@@ -464,6 +464,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           if (s.ticks.length > 1300) s.ticks.splice(0, s.ticks.length - 1200);
           if (sec % 10 === 0) s.sigma = blendSigma(s.ticks, s.slow);
         }
+        onFrame?.(state); // live view for whoever is watching
       }
 
       // New 5-minute market: switch the order-book subscription.
@@ -496,7 +497,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
         }).finally(() => (settling = false)));
       }
       // Regular saves keep the dashboard current and pick up its controls (kill switch, arming).
-      const every = (state.control.liveArmed ? Math.min(10, cfg.persistSeconds) : cfg.persistSeconds) * 1000;
+      const every = (state.control.liveArmed ? Math.min(10, saveEvery) : saveEvery) * 1000;
       if (Date.now() - lastSave >= every && !saving) {
         lastSave = Date.now();
         saving = true;
@@ -553,6 +554,8 @@ export interface TickOptions {
   noFallback?: boolean;
   /** Called after each save, e.g. to print progress. */
   onSave?: (state: State) => void;
+  /** Called about once a second during a real-time session with the live state (do not mutate). */
+  onFrame?: (state: State) => void;
 }
 
 export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
@@ -560,15 +563,21 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
   const store = getStore();
   const began = Date.now();
   const id = Math.random().toString(36).slice(2, 10);
+  const loopMs = Math.max(0, (opts.loopSeconds ?? cfg.loopSeconds) * 1000);
+  const saveEvery = cfg.persistSeconds || (store.kind === 'blob' ? 3600 : 30);
   let { state, etag } = await store.read();
   state = migrate(state, cfg);
-  if (state.lock && nowSec() - state.lock.at < 75) return { ok: true, busy: true, passes: 0, ms: 0, store: store.kind };
+  if (state.lock && nowSec() - state.lock.at < (state.lock.ttl ?? 75)) return { ok: true, busy: true, passes: 0, ms: 0, store: store.kind };
 
   // Saves the state. The dashboard may have changed the controls meanwhile:
   // in that case adopt its controls and save again, as long as we still hold the lock.
   const save = async () => {
     state!.updatedAt = nowSec();
-    if (state!.lock) state!.lock.at = state!.updatedAt; // heartbeat: a dead run frees the lock quickly
+    if (state!.lock) {
+      // Heartbeat: the lock is valid until shortly after the next expected save, so a dead run frees it.
+      const remaining = Math.max(0, (began + loopMs - Date.now()) / 1000);
+      state!.lock = { ...state!.lock, at: state!.updatedAt, ttl: Math.min(saveEvery, remaining) + 45 };
+    }
     try {
       etag = await store.write(state!, etag);
     } catch (e) {
@@ -584,12 +593,11 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
   let queue: Promise<void> = Promise.resolve();
   const persist = () => (queue = queue.then(save, save));
   applyControl(state, cfg, state.control);
-  const loopMs = Math.max(0, (opts.loopSeconds ?? cfg.loopSeconds) * 1000);
   // A lock is taken (one extra write) whenever the run is long or real money is involved.
   // Short paper-only runs rely on the final compare-and-swap instead: if two overlap, one is dropped.
   const locked = loopMs > 0 || liveConfigured(cfg);
   if (locked) {
-    state.lock = { at: nowSec(), id };
+    state.lock = { at: nowSec(), id, ttl: Math.min(saveEvery, loopMs / 1000) + 45 };
     try {
       state.updatedAt = nowSec();
       etag = await store.write(state, etag);
@@ -611,7 +619,7 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
     let streamed = false;
     if (cfg.realtime && loopMs >= 20000 && typeof WebSocket !== 'undefined') {
       try {
-        passes = await runStream(state, cfg, persist, began + loopMs, opts.signal);
+        passes = await runStream(state, cfg, persist, began + loopMs, saveEvery, opts.signal, opts.onFrame);
         streamed = true;
         mode = 'realtime';
       } catch (e) {
@@ -626,7 +634,7 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
       passes++;
       const next = t + cfg.intervalSeconds * 1000;
       if (next - began > loopMs) break;
-      if (Date.now() - lastSave >= cfg.persistSeconds * 1000) {
+      if (Date.now() - lastSave >= saveEvery * 1000) {
         lastSave = Date.now();
         await persist(); // keeps the dashboard current and the lock alive on long runs
       }
