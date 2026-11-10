@@ -14,9 +14,9 @@ export const FAMILY_LABEL: Record<Family, string> = {
 };
 
 const BOUNDS: Record<Exclude<keyof Genes, 'family'>, [number, number]> = {
-  minEdge: [0.01, 0.2],
-  minElapsed: [0, 240],
-  maxElapsed: [30, 285],
+  minEdge: [0.01, 0.25],
+  minElapsed: [0, 200],
+  maxElapsed: [30, 240],
   volMult: [0.6, 1.8],
   minPrice: [0.03, 0.9],
   maxPrice: [0.5, 0.97],
@@ -24,7 +24,7 @@ const BOUNDS: Record<Exclude<keyof Genes, 'family'>, [number, number]> = {
   lookback: [30, 900],
 };
 
-export const emptyStats = (): Stats => ({ n: 0, wins: 0, sumRoi: 0, sumSq: 0, ewN: 0, ewRoi: 0, ewSq: 0 });
+export const emptyStats = (): Stats => ({ n: 0, wins: 0, signals: 0, sum: 0, sumSq: 0, sumCost: 0, ewN: 0, ew: 0 });
 
 function normalise(g: Genes): Genes {
   const out = { ...g };
@@ -39,22 +39,32 @@ function normalise(g: Genes): Genes {
 }
 
 const base = (family: Family, over: Partial<Genes> = {}): Genes =>
-  normalise({ family, minEdge: 0.05, minElapsed: 20, maxElapsed: 240, volMult: 1, minPrice: 0.08, maxPrice: 0.92, k: 0.05, lookback: 300, ...over });
+  normalise({ family, minEdge: 0.05, minElapsed: 20, maxElapsed: 235, volMult: 1, minPrice: 0.08, maxPrice: 0.92, k: 0.05, lookback: 300, ...over });
 
-/** The starting line-up: a spread of sensible settings in each family. */
+/**
+ * The starting line-up. Weighted by what 1,152 replayed markets showed: reacting within a second,
+ * fair-value disagreements of 10¢ or more were profitable (+3.6¢ to +6.9¢ per share) while smaller
+ * ones lost to fees and faster traders, so fair-value variants demand a large edge. The learned
+ * model (which starts from the market's own price) gets as many variants; the rest are long shots.
+ */
 export function seedGenomes(): Genes[] {
   const out: Genes[] = [];
-  for (const minEdge of [0.03, 0.06, 0.1, 0.15]) {
+  for (const minEdge of [0.08, 0.11, 0.14, 0.18]) {
     out.push(base('fair', { minEdge, minElapsed: 20, maxElapsed: 150 }));
-    out.push(base('fair', { minEdge, minElapsed: 120, maxElapsed: 270, volMult: 1.15 }));
+    out.push(base('fair', { minEdge, minElapsed: 100, maxElapsed: 235, volMult: 1.1 }));
   }
-  for (const minEdge of [0.03, 0.05, 0.08, 0.12]) out.push(base('learned', { minEdge, maxElapsed: 270 }));
-  for (const [k, lookback] of [[0.04, 60], [0.06, 300], [0.08, 900], [0.1, 300]]) {
+  for (const minEdge of [0.015, 0.025, 0.04, 0.06]) {
+    out.push(base('learned', { minEdge, minElapsed: 20, maxElapsed: 150 }));
+    out.push(base('learned', { minEdge, minElapsed: 100, maxElapsed: 235 }));
+  }
+  for (const [k, lookback] of [[0.05, 60], [0.06, 300], [0.08, 900]]) {
     out.push(base('momentum', { k, lookback, minEdge: 0.02, minElapsed: 0, maxElapsed: 90, minPrice: 0.3, maxPrice: 0.7 }));
+  }
+  for (const [k, lookback] of [[0.06, 300], [0.08, 900]]) {
     out.push(base('reversion', { k, lookback, minEdge: 0.02, minElapsed: 0, maxElapsed: 90, minPrice: 0.3, maxPrice: 0.7 }));
   }
-  for (const [k, minPrice] of [[0.04, 0.6], [0.06, 0.75], [0.05, 0.85], [0.08, 0.7]]) {
-    out.push(base('follow', { k, minPrice, maxPrice: 0.97, minEdge: 0.01, minElapsed: 120, maxElapsed: 280 }));
+  for (const [k, minPrice] of [[0.04, 0.6], [0.05, 0.75], [0.04, 0.85]]) {
+    out.push(base('follow', { k, minPrice, maxPrice: 0.95, minEdge: 0.01, minElapsed: 120, maxElapsed: 235 }));
   }
   return out;
 }
@@ -135,40 +145,58 @@ export function evaluate(g: Genes, f: Features, quote: Quote, qModel: number | n
 
 // ---------------------------------------------------------------- scoring
 
-export function record(stats: Stats, roi: number, decay: number): void {
+/** Record one filled trade: `pnl` is profit per share (payout − all-in cost). */
+export function record(stats: Stats, pnl: number, cost: number, decay: number): void {
   stats.n++;
-  if (roi > 0) stats.wins++;
-  stats.sumRoi += roi;
-  stats.sumSq += roi * roi;
+  if (pnl > 0) stats.wins++;
+  stats.sum += pnl;
+  stats.sumSq += pnl * pnl;
+  stats.sumCost += cost;
   stats.ewN = stats.ewN * decay + 1;
-  stats.ewRoi = stats.ewRoi * decay + roi;
-  stats.ewSq = stats.ewSq * decay + roi * roi;
+  stats.ew = stats.ew * decay + pnl;
 }
 
 export interface Score {
+  /** Average profit per share since the strategy was born. */
   mean: number;
   se: number;
-  /** Pessimistic estimate: mean − 1 standard error. */
-  lcb: number;
+  /** How many standard errors the average is away from zero. */
   tstat: number;
+  /** Average over roughly the last 100 trades. */
+  recent: number;
+  /** Profit per dollar staked. */
+  roi: number;
 }
 
 export function score(s: Stats): Score {
-  if (s.ewN < 2) return { mean: 0, se: Infinity, lcb: -Infinity, tstat: 0 };
-  const mean = s.ewRoi / s.ewN;
-  const variance = Math.max(s.ewSq / s.ewN - mean * mean, 1e-6);
-  const se = Math.sqrt(variance / Math.min(s.ewN, s.n));
-  return { mean, se, lcb: mean - se, tstat: mean / se };
+  if (s.n < 2) return { mean: 0, se: Infinity, tstat: 0, recent: 0, roi: 0 };
+  const mean = s.sum / s.n;
+  const variance = Math.max(s.sumSq / s.n - mean * mean, 1e-4);
+  const se = Math.sqrt(variance / s.n);
+  return { mean, se, tstat: mean / se, recent: s.ewN > 0 ? s.ew / s.ewN : 0, roi: s.sumCost > 0 ? s.sum / s.sumCost : 0 };
 }
 
-/** Best strategy with enough evidence and a positive record; null means "stay flat". */
-export function pickChampion(pop: Strategy[], current: string | null, minTrades: number): string | null {
-  const ok = pop.filter((s) => s.stats.n >= minTrades && score(s.stats).mean > 0);
+/**
+ * A champion must have a record that is unlikely to be luck (t ≥ z over its whole life)
+ * and must not be losing lately. Otherwise null: the system stays flat.
+ *
+ * Replayed on 1,152 real markets, the previous rule ("15 trades and a positive average")
+ * crowned a lucky strategy 89% of the time and lost 45% of the demo bankroll.
+ */
+export function pickChampion(pop: Strategy[], current: string | null, minTrades: number, z: number): string | null {
+  const lcb = (s: Strategy) => {
+    const sc = score(s.stats);
+    return sc.mean - z * sc.se;
+  };
+  const ok = pop.filter((s) => {
+    const sc = score(s.stats);
+    return s.stats.n >= minTrades && sc.tstat >= z && sc.recent > 0;
+  });
   if (ok.length === 0) return null;
-  ok.sort((a, b) => score(b.stats).lcb - score(a.stats).lcb);
+  ok.sort((a, b) => lcb(b) - lcb(a));
   const cur = ok.find((s) => s.id === current);
   // Hysteresis: only dethrone the champion for a clearly better challenger.
-  if (cur && score(ok[0].stats).lcb < score(cur.stats).lcb + 0.02) return cur.id;
+  if (cur && lcb(ok[0]) < lcb(cur) + 0.01) return cur.id;
   return ok[0].id;
 }
 
@@ -179,25 +207,27 @@ export interface EvolveResult {
 }
 
 /**
- * One generation: retire proven losers and strategies that never trade,
- * replace them with mutated copies of the best performers (plus some fresh blood).
+ * One generation: retire strategies that are clearly losing (or never trade) and replace them with
+ * mutated copies of the best performers, plus some fresh blood. Deliberately slow: every replacement
+ * throws away evidence, and it takes hundreds of trades to tell a few cents of edge from luck.
  */
 export function evolve(pop: Strategy[], generation: number, windowCount: number, championId: string | null, rand: () => number, now: number): EvolveResult {
-  const maxReplace = Math.max(1, Math.floor(pop.length / 4));
+  const maxReplace = Math.max(1, Math.floor(pop.length / 8));
   const scored = pop.map((s) => ({ s, sc: score(s.stats) }));
+  const idle = (s: Strategy) => s.stats.n < 3 && windowCount - s.bornWindow > 400;
   const losers = scored
-    .filter(({ s, sc }) => s.id !== championId && ((s.stats.n >= 25 && sc.mean < 0) || (s.stats.n < 3 && windowCount - s.bornWindow > 400)))
-    .sort((a, b) => (a.s.stats.n < 3 ? -1 : a.sc.mean) - (b.s.stats.n < 3 ? -1 : b.sc.mean))
+    .filter(({ s, sc }) => s.id !== championId && ((s.stats.n >= 60 && sc.tstat < -1) || idle(s)))
+    .sort((a, b) => (idle(a.s) ? -99 : a.sc.tstat) - (idle(b.s) ? -99 : b.sc.tstat))
     .slice(0, maxReplace)
     .map((x) => x.s);
   if (losers.length === 0) return { population: pop, removed: [], added: [] };
   const parents = scored
-    .filter(({ s }) => s.stats.n >= 10 && !losers.includes(s))
-    .sort((a, b) => b.sc.lcb - a.sc.lcb)
+    .filter(({ s }) => s.stats.n >= 20 && !losers.includes(s))
+    .sort((a, b) => b.sc.tstat - a.sc.tstat)
     .slice(0, 5)
     .map((x) => x.s);
   const added: Strategy[] = losers.map((_, i) => {
-    const fresh = parents.length === 0 || rand() < 0.25;
+    const fresh = parents.length === 0 || rand() < 0.34;
     const parent = fresh ? undefined : parents[Math.floor(rand() * rand() * parents.length)];
     return {
       id: `g${generation}-${i}`,

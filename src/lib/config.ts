@@ -25,15 +25,29 @@ export const config = () => ({
   kellyFraction: num('KELLY_FRACTION', 0.25),
   maxStakePct: num('MAX_STAKE_PCT', 0.03),
   shadowStake: 10,
-  championMinTrades: num('CHAMPION_MIN_TRADES', 15),
+  /** A strategy only gets to trade once its record is this unlikely to be luck. */
+  championMinTrades: num('CHAMPION_MIN_TRADES', 40),
+  championZ: num('CHAMPION_Z', 2),
+  /** Paper orders are re-checked against a fresh book after this delay, like a real order in transit. */
+  confirmMs: num('FILL_CONFIRM_MS', 1500),
+  slippage: num('MAX_SLIPPAGE', 0.01),
+  maxSpread: num('MAX_SPREAD', 0.04),
+  /** No new trades after this many seconds: the market out-forecasts us in the final minute. */
+  lastEntry: num('LAST_ENTRY_SECONDS', 240),
   // --- self-improvement
   population: 24,
-  evolveEvery: num('EVOLVE_EVERY_WINDOWS', 48),
+  evolveEvery: num('EVOLVE_EVERY_WINDOWS', 96),
   ewDecay: 0.99,
   learningRate: num('MODEL_LEARNING_RATE', 0.03),
   // --- tick loop
-  loopSeconds: num('TICK_LOOP_SECONDS', 50),
+  loopSeconds: num('TICK_LOOP_SECONDS', 285),
   intervalSeconds: Math.max(3, num('TICK_INTERVAL_SECONDS', 10)),
+  // --- real-time engine (WebSocket feeds); falls back to polling if unavailable
+  realtime: bool('REALTIME', true),
+  evalMs: Math.max(50, num('STREAM_EVAL_MS', 200)),
+  /** Paper orders are checked against the live book this long after the decision (order travel time). */
+  streamConfirmMs: num('STREAM_CONFIRM_MS', 500),
+  persistSeconds: Math.max(5, num('PERSIST_SECONDS', 30)),
   // --- production (real money)
   liveTrading: bool('LIVE_TRADING'),
   privateKey: process.env.POLYMARKET_PRIVATE_KEY || '',
@@ -41,8 +55,8 @@ export const config = () => ({
   signatureType: num('POLYMARKET_SIGNATURE_TYPE', 1),
   liveStakeUsd: num('LIVE_STAKE_USD', 5),
   liveMaxDailyLoss: num('LIVE_MAX_DAILY_LOSS', 25),
-  liveMinTrades: num('LIVE_MIN_TRADES', 100),
-  liveMinTstat: num('LIVE_MIN_TSTAT', 2),
+  liveMinTrades: num('LIVE_MIN_TRADES', 150),
+  liveMinTstat: num('LIVE_MIN_TSTAT', 3),
   liveMaxSlippage: num('LIVE_MAX_SLIPPAGE', 0.02),
   // --- auth
   cronSecret: process.env.CRON_SECRET || '',

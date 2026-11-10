@@ -16,11 +16,11 @@ export function publicView(state: State, store: Store) {
       const sc = score(s.stats);
       return {
         id: s.id, gen: s.gen, parent: s.parent ?? null, family: s.genes.family, familyLabel: FAMILY_LABEL[s.genes.family], summary: describe(s.genes),
-        n: s.stats.n, wins: s.stats.wins, roi: s.stats.n ? s.stats.sumRoi / s.stats.n : null, recentRoi: s.stats.n >= 2 ? sc.mean : null,
-        lcb: fin(sc.lcb), tstat: s.stats.n >= 2 ? fin(sc.tstat) : null, champion: s.id === state.championId,
+        n: s.stats.n, wins: s.stats.wins, signals: s.stats.signals ?? 0, edge: s.stats.n >= 2 ? sc.mean : null, se: s.stats.n >= 2 ? fin(sc.se) : null,
+        recent: s.stats.n >= 2 ? sc.recent : null, roi: s.stats.n >= 2 ? sc.roi : null, tstat: s.stats.n >= 2 ? fin(sc.tstat) : null, champion: s.id === state.championId,
       };
     })
-    .sort((a, b) => Number(b.champion) - Number(a.champion) || (b.lcb ?? -9) - (a.lcb ?? -9) || b.n - a.n);
+    .sort((a, b) => Number(b.champion) - Number(a.champion) || (b.tstat ?? -99) - (a.tstat ?? -99) || b.n - a.n);
   const account = (a: State['demo']) => ({ ...a, trades: a.trades.slice(0, 60), open: a.trades.filter((t) => t.status === 'open').length });
   return {
     now,
@@ -43,7 +43,8 @@ export function publicView(state: State, store: Store) {
     settings: {
       liveTrading: cfg.liveTrading, liveConfigured: liveConfigured(cfg), liveStakeUsd: cfg.liveStakeUsd, liveMaxDailyLoss: cfg.liveMaxDailyLoss,
       adminRequired: !!cfg.adminToken, store: store.kind, durable: store.durable, kellyFraction: cfg.kellyFraction, maxStakePct: cfg.maxStakePct,
-      loopSeconds: cfg.loopSeconds, intervalSeconds: cfg.intervalSeconds, championMinTrades: cfg.championMinTrades,
+      loopSeconds: cfg.loopSeconds, intervalSeconds: cfg.intervalSeconds, championMinTrades: cfg.championMinTrades, championZ: cfg.championZ,
+      liveMinTrades: cfg.liveMinTrades, liveMinTstat: cfg.liveMinTstat,
     },
   };
 }

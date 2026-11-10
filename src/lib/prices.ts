@@ -17,6 +17,8 @@ export interface Series {
   ticks: Tick[];
   /** Per-√second volatility of log returns. */
   sigma: number;
+  /** The slow component (1 hour of 1-minute bars), kept so the fast one can be refreshed live. */
+  slow: number;
   last: Tick;
 }
 
@@ -24,7 +26,7 @@ const BINANCE = 'https://data-api.binance.vision/api/v3/klines';
 
 type Kline = [number, string, string, string, string, string, number, string, number, string, string, string];
 
-function realizedSigma(closes: number[], stepSeconds: number): number {
+export function realizedSigma(closes: number[], stepSeconds: number): number {
   let s = 0;
   let n = 0;
   for (let i = 1; i < closes.length; i++) {
@@ -35,6 +37,14 @@ function realizedSigma(closes: number[], stepSeconds: number): number {
     }
   }
   return n > 5 ? Math.sqrt(s / n / stepSeconds) : 0;
+}
+
+/** Blend the slow volatility with the fast one (10-second returns over the last ~16 minutes). */
+export function blendSigma(ticks: Tick[], slow: number): number {
+  const tenSec: number[] = [];
+  for (let i = ticks.length - 1; i >= Math.max(0, ticks.length - 1000); i -= 10) tenSec.unshift(ticks[i].c);
+  const fast = realizedSigma(tenSec, 10);
+  return slow > 0 && fast > 0 ? Math.sqrt((slow * slow + fast * fast) / 2) : slow || fast;
 }
 
 async function binance(asset: Asset): Promise<Series> {
@@ -48,11 +58,7 @@ async function binance(asset: Asset): Promise<Series> {
   if (ticks.length < 400) throw new Error('binance: not enough data');
   // Slow volatility from 1-minute bars (1h), fast from 10-second returns (~16 min).
   const slow = realizedSigma(min.slice(0, -1).map((k) => +k[4]), 60);
-  const tenSec: number[] = [];
-  for (let i = ticks.length - 1; i >= 0; i -= 10) tenSec.unshift(ticks[i].c);
-  const fast = realizedSigma(tenSec, 10);
-  const sigma = slow > 0 && fast > 0 ? Math.sqrt((slow * slow + fast * fast) / 2) : slow || fast;
-  return { source: 'binance', step: 1, ticks, sigma, last: ticks[ticks.length - 1] };
+  return { source: 'binance', step: 1, ticks, sigma: blendSigma(ticks, slow), slow, last: ticks[ticks.length - 1] };
 }
 
 async function coinbase(asset: Asset): Promise<Series> {
@@ -61,7 +67,7 @@ async function coinbase(asset: Asset): Promise<Series> {
   const asc = rows.slice(0, 90).reverse();
   const ticks: Tick[] = asc.map((r) => ({ t: r[0] + 60, c: r[4], v: r[5], tb: r[5] / 2 }));
   const sigma = realizedSigma(ticks.slice(-61, -1).map((x) => x.c), 60);
-  return { source: 'coinbase', step: 60, ticks, sigma, last: ticks[ticks.length - 1] };
+  return { source: 'coinbase', step: 60, ticks, sigma, slow: sigma, last: ticks[ticks.length - 1] };
 }
 
 export async function getSeries(asset: Asset): Promise<Series> {

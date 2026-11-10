@@ -2,7 +2,7 @@ import { canTick } from '@/lib/auth';
 import { runTick } from '@/lib/engine';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   if (!canTick(req)) return Response.json({ error: 'unauthorized' }, { status: 401 });

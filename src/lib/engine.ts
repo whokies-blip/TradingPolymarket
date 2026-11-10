@@ -1,11 +1,12 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy } from './live';
 import { mulberry32, round } from './math';
-import { computeFeatures, fairProb, featureVector, learn, newModel, predict } from './model';
-import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindow, simulateBuy, type Book } from './polymarket';
-import { getSeries, strikeOf, windowStartOf } from './prices';
+import { computeFeatures, fairProb, featureVector, learn, newModel, predict, type Features } from './model';
+import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindow, simulateBuy, type Book, type Level } from './polymarket';
+import { BookFeed, SpotFeed } from './feeds';
+import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
-import { FAMILY_LABEL, emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes, type Signal } from './strategies';
+import { FAMILY_LABEL, emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
 import type { Account, Asset, GateCheck, LogEntry, Side, State, Strategy, Trade, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
@@ -16,7 +17,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = seedGenomes().map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 1,
+    version: 2,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -32,9 +33,17 @@ export function initState(cfg: Config, now = nowSec()): State {
     control: { killSwitch: false, liveArmed: false },
     snapshots: {},
     gate: [],
-    log: [{ t: now, level: 'info', msg: 'Système initialisé : 24 stratégies en observation.' }],
+    log: [{ t: now, level: 'info', msg: `Système initialisé : ${strategies.length} stratégies en observation.` }],
     recent: [],
   };
+}
+
+/** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
+export function migrate(state: State | null, cfg: Config): State {
+  if (state && state.version === 2) return state;
+  const fresh = initState(cfg);
+  if (state?.control) fresh.control = { killSwitch: !!state.control.killSwitch, liveArmed: false };
+  return fresh;
 }
 
 export function log(state: State, level: LogEntry['level'], msg: string, now = nowSec()) {
@@ -91,6 +100,65 @@ function openTrade(acct: Account, t: Trade) {
   }
 }
 
+export interface Pending {
+  strat: Strategy;
+  sig: Signal;
+}
+
+/** Which strategies want to trade right now (each at most once per market). */
+export function decide(state: State, cfg: Config, win: WindowRec, f: Features, quote: Quote, qModel: number | null, skip?: (id: string) => boolean): Pending[] {
+  if (f.elapsed > cfg.lastEntry) return [];
+  const traded = new Set(win.shadows.map((s) => s.sid));
+  const out: Pending[] = [];
+  for (const strat of state.strategies) {
+    if (traded.has(strat.id) || skip?.(strat.id)) continue;
+    const sig = evaluate(strat.genes, f, quote, qModel);
+    if (!sig) continue;
+    strat.stats.signals = (strat.stats.signals ?? 0) + 1;
+    out.push({ strat, sig });
+  }
+  return out;
+}
+
+/**
+ * Turn signals into paper trades against a book fetched AFTER the decision, the way a real order
+ * arrives a moment later. If the price is gone (beyond one tick of slippage), there is no fill.
+ * This matters: counting fills at the price we merely saw made losing strategies look profitable.
+ */
+export function applyFills(state: State, cfg: Config, win: WindowRec, pending: Pending[], asksUp: Level[], asksDown: Level[], now: number) {
+  for (const { strat, sig } of pending) {
+    const asks = sig.side === 'up' ? asksUp : asksDown;
+    const cap = Math.min(0.99, sig.ask + cfg.slippage);
+    const fill = simulateBuy(asks, cfg.shadowStake, win.feeRate, win.feeExp, cap);
+    if (!fill) continue;
+    win.shadows.push({ sid: strat.id, side: sig.side, cost: round(fill.cost / fill.shares), q: round(sig.q), elapsed: Math.round(now - win.start) });
+    if (strat.id === state.championId && !state.control.killSwitch && !win.demoTradeId) openDemo(state, cfg, win, strat, sig, asks, cap, now);
+  }
+}
+
+function openDemo(state: State, cfg: Config, win: WindowRec, strat: Strategy, sig: Signal, asks: Level[], cap: number, now: number) {
+  const c = sig.ask + feePerShare(sig.ask, win.feeRate, win.feeExp);
+  // Size on the edge the champion has actually delivered (pessimistically: average − 1 standard
+  // error), never on the edge it claims. Then a quarter of Kelly, capped.
+  const sc = score(strat.stats);
+  const proven = Math.min(sig.edge, Math.max(0, sc.mean - sc.se));
+  const kelly = proven / (1 - c);
+  // BTC and ETH resolve the same way 83% of the time: a second bet in the same 5 minutes is mostly
+  // the same bet, so it shares the risk budget.
+  const sameWindow = state.demo.trades.filter((t) => t.status === 'open' && t.windowStart === win.start).length;
+  const stake = (state.demo.bankroll * Math.min(cfg.maxStakePct, cfg.kellyFraction * kelly)) / (1 + sameWindow);
+  if (stake < 1) return;
+  const fill = simulateBuy(asks, stake, win.feeRate, win.feeExp, cap);
+  if (!fill || fill.shares < win.minSize) return;
+  const id = `d-${win.key}`;
+  win.demoTradeId = id;
+  openTrade(state.demo, {
+    id, mode: 'demo', asset: win.asset, windowStart: win.start, slug: win.slug, side: sig.side, shares: round(fill.shares, 2), price: round(fill.price),
+    fee: round(fill.fee), cost: round(fill.cost), q: round(sig.q), edge: round(sig.edge), strategyId: strat.id, openedAt: now, status: 'open',
+  });
+  log(state, 'trade', `DÉMO ${win.asset.toUpperCase()} : achat ${sig.side === 'up' ? 'Hausse' : 'Baisse'} ${fill.shares.toFixed(1)} parts à ${(fill.price * 100).toFixed(1)}¢ (avantage estimé ${(sig.edge * 100).toFixed(1)}¢).`, now);
+}
+
 async function processAsset(state: State, cfg: Config, asset: Asset, persist: () => Promise<void>): Promise<void> {
   const t0 = nowSec();
   const start = windowStartOf(t0);
@@ -105,7 +173,9 @@ async function processAsset(state: State, cfg: Config, asset: Asset, persist: ()
     win = state.windows[key] = fetched;
   }
 
+  const asked = Date.now();
   const [series, bookUp, bookDown] = await Promise.all([getSeries(asset), fetchBook(win.upToken), fetchBook(win.downToken)]);
+  const latencyMs = Date.now() - asked;
   const now = nowSec();
   if (windowStartOf(now) !== start) return; // the window rolled over while fetching
   if (win.strike === undefined) {
@@ -127,7 +197,7 @@ async function processAsset(state: State, cfg: Config, asset: Asset, persist: ()
 
   state.snapshots[asset] = {
     t: now, asset, slug: win.slug, windowStart: start, elapsed: round(f.elapsed, 1), spot: f.spot, strike: round(win.strike, 2),
-    sigma: f.sigma, source: series.source, askUp: up.ask, askDown: down.ask, bidUp: up.bid, mid, qFair: round(qFair), qModel: qModel === null ? null : round(qModel),
+    sigma: f.sigma, source: series.source, askUp: up.ask, askDown: down.ask, bidUp: up.bid, mid, qFair: round(qFair), qModel: qModel === null ? null : round(qModel), latencyMs,
   };
   if (mid === null || !x) return;
 
@@ -137,57 +207,45 @@ async function processAsset(state: State, cfg: Config, asset: Asset, persist: ()
     win.obs.push({ elapsed: Math.round(f.elapsed), x: x.map((v) => round(v)), mid: round(mid), qFair: round(qFair) });
   }
 
-  // Never act on a stale or degraded price feed, or on a broken book.
-  const fresh = series.source === 'binance' && now - series.last.t < 6;
-  const sane = up.ask !== null && down.ask !== null && up.ask + down.ask >= 0.97 && up.ask + down.ask <= 1.12;
-  if (!fresh || !sane || f.elapsed > 292) return;
+  // Speed is the whole game here: with prices even 2 seconds old, every strategy tested lost.
+  // So never act on slow, stale or degraded data, on a wide spread, or on a broken book.
+  const fresh = series.source === 'binance' && now - series.last.t < 3 && latencyMs < 2500;
+  const sane = up.ask !== null && down.ask !== null && up.ask + down.ask >= 0.97 && up.ask + down.ask <= 1 + cfg.maxSpread + 0.02;
+  if (!fresh || !sane) return;
 
-  const quote = { askUp: up.ask, askDown: down.ask, mid, feeRate: win.feeRate, feeExp: win.feeExp };
-  const traded = new Set(win.shadows.map((s) => s.sid));
-  for (const strat of state.strategies) {
-    if (traded.has(strat.id)) continue;
-    const sig = evaluate(strat.genes, f, quote, qModel);
-    if (!sig) continue;
-    const asks = sig.side === 'up' ? bookUp.asks : bookDown.asks;
-    const cap = Math.min(0.99, sig.ask + 0.02);
-    const fill = simulateBuy(asks, cfg.shadowStake, win.feeRate, win.feeExp, cap);
-    if (!fill) continue;
-    win.shadows.push({ sid: strat.id, side: sig.side, cost: round(fill.cost / fill.shares), q: round(sig.q), elapsed: Math.round(f.elapsed) });
+  const pending = decide(state, cfg, win, f, { askUp: up.ask, askDown: down.ask, mid, feeRate: win.feeRate, feeExp: win.feeExp }, qModel);
+  if (pending.length === 0) return;
 
-    if (strat.id !== state.championId || state.control.killSwitch) continue;
-    if (!win.demoTradeId) openDemo(state, cfg, win, strat, sig, asks, cap, now);
-    if (!win.liveTradeId && computeGate(state, cfg, now).every((g) => g.ok)) {
-      await openLive(state, cfg, win, strat, sig, cap, now, persist);
-    }
+  // Real money goes first: the exchange itself decides whether the price is still there.
+  const champ = pending.find((p) => p.strat.id === state.championId);
+  const liveThisWindow = state.live.trades.some((t) => t.windowStart === start && t.status !== 'failed');
+  if (champ && !win.liveTradeId && !liveThisWindow && computeGate(state, cfg, now).every((g) => g.ok)) {
+    await openLive(state, cfg, win, champ.strat, champ.sig, Math.min(0.99, champ.sig.ask + cfg.liveMaxSlippage), now, persist);
   }
+
+  // Paper trades are confirmed against a fresh book, as if the order had travelled.
+  const wait = cfg.confirmMs - (Date.now() - asked - latencyMs);
+  if (wait > 0) await sleep(wait);
+  const [confirmUp, confirmDown] = await Promise.all([fetchBook(win.upToken), fetchBook(win.downToken)]);
+  const later = nowSec();
+  if (windowStartOf(later) !== start) return;
+  applyFills(state, cfg, win, pending, confirmUp.asks, confirmDown.asks, later);
 }
 
-function openDemo(state: State, cfg: Config, win: WindowRec, strat: Strategy, sig: Signal, asks: Book['asks'], cap: number, now: number) {
-  const c = sig.ask + feePerShare(sig.ask, win.feeRate, win.feeExp);
-  // Fractional Kelly: bet a quarter of what the edge theoretically justifies, capped.
-  const kelly = Math.max(0, (sig.q - c) / (1 - c));
-  const stake = state.demo.bankroll * Math.min(cfg.maxStakePct, cfg.kellyFraction * kelly);
-  if (stake < 1) return;
-  const fill = simulateBuy(asks, stake, win.feeRate, win.feeExp, cap);
-  if (!fill || fill.shares < win.minSize) return;
-  const id = `d-${win.key}`;
-  win.demoTradeId = id;
-  openTrade(state.demo, {
-    id, mode: 'demo', asset: win.asset, windowStart: win.start, slug: win.slug, side: sig.side, shares: round(fill.shares, 2), price: round(fill.price),
-    fee: round(fill.fee), cost: round(fill.cost), q: round(sig.q), edge: round(sig.edge), strategyId: strat.id, openedAt: now, status: 'open',
-  });
-  log(state, 'trade', `DÉMO ${win.asset.toUpperCase()} : achat ${sig.side === 'up' ? 'Hausse' : 'Baisse'} ${fill.shares.toFixed(1)} parts à ${(fill.price * 100).toFixed(1)}¢ (avantage estimé ${(sig.edge * 100).toFixed(1)}¢).`, now);
-}
-
-async function openLive(state: State, cfg: Config, win: WindowRec, strat: Strategy, sig: Signal, cap: number, now: number, persist: () => Promise<void>) {
+async function openLive(state: State, cfg: Config, win: WindowRec, strat: Strategy, sig: Signal, cap: number, now: number, persist: () => Promise<void>, fast = false) {
   const id = `l-${win.key}`;
-  // Reserve the slot and save BEFORE sending, so a crash can never cause a double order.
   win.liveTradeId = id;
-  await persist();
-  // Saving also picks up the latest dashboard controls: re-check before sending.
-  if (state.control.killSwitch || !state.control.liveArmed) return;
-  const maxPrice = Math.min(cap, sig.ask + cfg.liveMaxSlippage);
-  const res = await placeLiveBuy(cfg, { tokenId: sig.side === 'up' ? win.upToken : win.downToken, usd: cfg.liveStakeUsd, maxPrice, tickSize: win.tickSize, negRisk: win.negRisk });
+  if (fast) {
+    // Real-time mode: every 100 ms counts, so the reservation is saved while the order travels.
+    // (Worst case after a crash in that instant: one duplicate order of the fixed stake.)
+    void persist().catch(() => {});
+  } else {
+    // Reserve the slot and save BEFORE sending, so a crash can never cause a double order.
+    await persist();
+    // Saving also picks up the latest dashboard controls: re-check before sending.
+    if (state.control.killSwitch || !state.control.liveArmed) return;
+  }
+  const res = await placeLiveBuy(cfg, { tokenId: sig.side === 'up' ? win.upToken : win.downToken, usd: cfg.liveStakeUsd, maxPrice: cap, tickSize: win.tickSize, negRisk: win.negRisk });
   const trade: Trade = {
     id, mode: 'live', asset: win.asset, windowStart: win.start, slug: win.slug, side: sig.side, shares: round(res.shares ?? 0, 2), price: res.ok ? round(res.cost! / res.shares!) : sig.ask,
     fee: 0, cost: round(res.cost ?? 0), q: round(sig.q), edge: round(sig.edge), strategyId: strat.id, openedAt: now, status: res.ok ? 'open' : 'failed', orderId: res.orderId, error: res.error,
@@ -223,7 +281,7 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   if (outcome !== 'void') {
     for (const sh of win.shadows) {
       const strat = state.strategies.find((s) => s.id === sh.sid);
-      if (strat) record(strat.stats, sh.side === outcome ? (1 - sh.cost) / sh.cost : -1, cfg.ewDecay);
+      if (strat) record(strat.stats, (sh.side === outcome ? 1 : 0) - sh.cost, sh.cost, cfg.ewDecay);
     }
     learn(state.models[win.asset], win.obs, outcome === 'up' ? 1 : 0, cfg.learningRate);
   }
@@ -256,10 +314,10 @@ async function settle(state: State, cfg: Config) {
 
 export function improve(state: State, cfg: Config, now = nowSec()) {
   const prev = state.championId;
-  state.championId = pickChampion(state.strategies, prev, cfg.championMinTrades);
+  state.championId = pickChampion(state.strategies, prev, cfg.championMinTrades, cfg.championZ);
   if (state.championId !== prev) {
     const c = state.strategies.find((s) => s.id === state.championId);
-    log(state, 'evolve', c ? `Nouveau champion : ${c.id} (${FAMILY_LABEL[c.genes.family]}), ROI moyen ${(score(c.stats).mean * 100).toFixed(1)} % sur ${c.stats.n} trades.` : 'Plus aucun champion : aucune stratégie rentable, le système reste à l’écart.', now);
+    log(state, 'evolve', c ? `Nouveau champion : ${c.id} (${FAMILY_LABEL[c.genes.family]}), ${(score(c.stats).mean * 100).toFixed(1)}¢ gagnés par part sur ${c.stats.n} trades (t = ${score(c.stats).tstat.toFixed(1)}).` : 'Plus aucun champion : aucune stratégie n’a un avantage prouvé, le système reste à l’écart.', now);
   }
   if (state.settledWindows - state.lastEvolveAt >= cfg.evolveEvery) {
     state.lastEvolveAt = state.settledWindows;
@@ -268,6 +326,167 @@ export function improve(state: State, cfg: Config, now = nowSec()) {
     state.strategies = res.population;
     if (res.added.length) log(state, 'evolve', `Génération ${state.generation} : ${res.removed.length} stratégie(s) retirée(s) (${res.removed.map((s) => s.id).join(', ')}), remplacée(s) par des variantes des meilleures.`, now);
   }
+}
+
+// ------------------------------------------------------------------ real-time session
+
+/**
+ * Trades from live WebSocket feeds until `deadlineMs`: spot price trade by trade, the full order
+ * book in memory, a decision every 200 ms. Paper orders are checked against the book half a second
+ * later (the time a real order needs to arrive); real orders are sent immediately.
+ */
+async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number): Promise<number> {
+  const series = Object.fromEntries(await Promise.all(ASSETS.map(async (a) => [a, await getSeries(a)] as const))) as Record<Asset, Series>;
+  if (ASSETS.some((a) => series[a].source !== 'binance')) throw new Error('flux de prix principal indisponible');
+  const spot = new SpotFeed();
+  await spot.start(ASSETS);
+
+  let book: BookFeed | null = null;
+  let bookStart = -1;
+  let rolling = false;
+  let rollAfter = 0;
+  const roll = async (start: number) => {
+    const wins = await Promise.all(ASSETS.map(async (a) => state.windows[`${a}-${start}`] ?? (await fetchWindow(a, start))));
+    const tokens: string[] = [];
+    wins.forEach((w, i) => {
+      if (!w) return log(state, 'warn', `Marché ${ASSETS[i].toUpperCase()} introuvable pour la fenêtre en cours.`);
+      state.windows[w.key] = w;
+      tokens.push(w.upToken, w.downToken);
+    });
+    if (tokens.length === 0) return;
+    const next = new BookFeed(tokens);
+    await next.start();
+    book?.close();
+    book = next;
+    bookStart = start;
+  };
+
+  const retryAt = new Map<string, number>();
+  const confirms: { due: number; win: WindowRec; p: Pending }[] = [];
+  const background = new Set<Promise<unknown>>();
+  const run = (p: Promise<unknown>) => {
+    background.add(p);
+    void p.catch((e) => log(state, 'warn', String((e as Error)?.message || e).slice(0, 140))).finally(() => background.delete(p));
+  };
+  let settling = false;
+  let saving = false;
+  let liveBusy = false;
+  let lastSecond = Math.floor(nowSec());
+  let lastSettle = 0;
+  let lastSave = Date.now();
+  let evals = 0;
+
+  const evalAsset = (asset: Asset, now: number, start: number, feed: BookFeed) => {
+    const win = state.windows[`${asset}-${start}`];
+    const price = spot.last[asset];
+    if (!win || price === undefined) return;
+    const s = series[asset];
+    s.last = { t: now, c: price, v: 0, tb: 0 };
+    if (win.strike === undefined) {
+      const k = strikeOf(s, start);
+      if (k === null) return;
+      win.strike = k;
+    }
+    const f = computeFeatures(s, start, win.strike, now);
+    if (!f) return;
+    const up = feed.best(win.upToken);
+    const down = feed.best(win.downToken);
+    const mid = up.ask !== null && up.bid !== null ? (up.ask + up.bid) / 2 : up.ask !== null && down.ask !== null ? (up.ask + 1 - down.ask) / 2 : null;
+    const qFair = fairProb(f.z);
+    const model = state.models[asset];
+    const x = mid !== null ? featureVector(f, mid) : null;
+    const qModel = x && model.n >= 200 ? predict(model, x) : null;
+    // Feed health: the book stream is busy (hundreds of updates per second); spot trades can pause briefly.
+    const bookAge = Date.now() - feed.lastMsg;
+    const age = Date.now() - spot.lastMsg > 5000 ? 9999 : Math.round(bookAge);
+    state.snapshots[asset] = {
+      t: now, asset, slug: win.slug, windowStart: start, elapsed: round(f.elapsed, 1), spot: f.spot, strike: round(win.strike, 2),
+      sigma: f.sigma, source: 'binance (temps réel)', askUp: up.ask, askDown: down.ask, bidUp: up.bid, mid, qFair: round(qFair), qModel: qModel === null ? null : round(qModel), latencyMs: age,
+    };
+    if (mid === null || !x) return;
+    const lastObs = win.obs[win.obs.length - 1];
+    if (f.elapsed >= 5 && f.elapsed <= 290 && win.obs.length < 9 && (!lastObs || f.elapsed - lastObs.elapsed >= 28)) {
+      win.obs.push({ elapsed: Math.round(f.elapsed), x: x.map((v) => round(v)), mid: round(mid), qFair: round(qFair) });
+    }
+    const sane = up.ask !== null && down.ask !== null && up.ask + down.ask >= 0.97 && up.ask + down.ask <= 1 + cfg.maxSpread + 0.02;
+    if (age > 3000 || !sane) return;
+
+    const pending = decide(state, cfg, win, f, { askUp: up.ask, askDown: down.ask, mid, feeRate: win.feeRate, feeExp: win.feeExp }, qModel, (id) => (retryAt.get(`${id}|${win.key}`) ?? 0) > now);
+    for (const p of pending) {
+      retryAt.set(`${p.strat.id}|${win.key}`, now + 5); // a missed order may be retried after 5 s
+      confirms.push({ due: Date.now() + cfg.streamConfirmMs, win, p });
+    }
+    const champ = pending.find((p) => p.strat.id === state.championId);
+    if (champ && !liveBusy && !win.liveTradeId && !state.live.trades.some((t) => t.windowStart === start && t.status !== 'failed') && computeGate(state, cfg, now).every((g) => g.ok)) {
+      liveBusy = true;
+      run(openLive(state, cfg, win, champ.strat, champ.sig, Math.min(0.99, champ.sig.ask + cfg.liveMaxSlippage), now, persist, true).finally(() => (liveBusy = false)));
+    }
+  };
+
+  try {
+    while (Date.now() < deadlineMs) {
+      const now = nowSec();
+      const start = windowStartOf(now);
+      if (spot.closed) throw new Error('flux de prix interrompu');
+
+      // Once per second: extend the price history the model works from.
+      const sec = Math.floor(now);
+      if (sec !== lastSecond) {
+        lastSecond = sec;
+        for (const a of ASSETS) {
+          const price = spot.last[a];
+          if (price === undefined) continue;
+          const vol = spot.drain(a);
+          const s = series[a];
+          s.ticks.push({ t: sec, c: price, v: vol.v, tb: vol.tb });
+          if (s.ticks.length > 1300) s.ticks.splice(0, s.ticks.length - 1200);
+          if (sec % 10 === 0) s.sigma = blendSigma(s.ticks, s.slow);
+        }
+      }
+
+      // New 5-minute market: switch the order-book subscription.
+      const feed = book as BookFeed | null;
+      if ((bookStart !== start || !feed || feed.closed) && !rolling && Date.now() >= rollAfter) {
+        rolling = true;
+        rollAfter = Date.now() + 2000; // if it fails, wait before reconnecting
+        run(roll(start).finally(() => (rolling = false)));
+      }
+      if (feed && bookStart === start && feed.ready()) {
+        for (const a of ASSETS) evalAsset(a, now, start, feed);
+        evals++;
+        // Paper orders whose travel time has elapsed: fill them against the book as it is NOW.
+        while (confirms.length && confirms[0].due <= Date.now()) {
+          const c = confirms.shift()!;
+          if (c.win.start !== start || c.win.outcome) continue;
+          applyFills(state, cfg, c.win, [c.p], feed.asks(c.win.upToken), feed.asks(c.win.downToken), nowSec());
+        }
+      }
+
+      if (now - lastSettle >= 10 && !settling) {
+        lastSettle = now;
+        settling = true;
+        const before = state.settledWindows;
+        run(settle(state, cfg).then(() => {
+          if (state.settledWindows !== before) improve(state, cfg);
+          for (const w of Object.values(state.windows)) if (w.strike === undefined && nowSec() > w.start + WINDOW) delete state.windows[w.key];
+        }).finally(() => (settling = false)));
+      }
+      // Regular saves keep the dashboard current and pick up its controls (kill switch, arming).
+      const every = (state.control.liveArmed ? Math.min(10, cfg.persistSeconds) : cfg.persistSeconds) * 1000;
+      if (Date.now() - lastSave >= every && !saving) {
+        lastSave = Date.now();
+        saving = true;
+        state.gate = computeGate(state, cfg);
+        run(persist().finally(() => (saving = false)));
+      }
+      await sleep(cfg.evalMs);
+    }
+  } finally {
+    spot.close();
+    (book as BookFeed | null)?.close();
+    await Promise.allSettled([...background]);
+  }
+  return evals;
 }
 
 // ------------------------------------------------------------------ tick
@@ -297,6 +516,7 @@ export interface TickResult {
   ok: boolean;
   busy?: boolean;
   passes: number;
+  mode?: 'realtime' | 'polling';
   ms: number;
   store: Store['kind'];
 }
@@ -307,13 +527,14 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
   const began = Date.now();
   const id = Math.random().toString(36).slice(2, 10);
   let { state, etag } = await store.read();
-  if (!state) state = initState(cfg);
-  if (state.lock && nowSec() - state.lock.at < 58) return { ok: true, busy: true, passes: 0, ms: 0, store: store.kind };
+  state = migrate(state, cfg);
+  if (state.lock && nowSec() - state.lock.at < 75) return { ok: true, busy: true, passes: 0, ms: 0, store: store.kind };
 
   // Saves the state. The dashboard may have changed the controls meanwhile:
   // in that case adopt its controls and save again, as long as we still hold the lock.
-  const persist = async () => {
+  const save = async () => {
     state!.updatedAt = nowSec();
+    if (state!.lock) state!.lock.at = state!.updatedAt; // heartbeat: a dead run frees the lock quickly
     try {
       etag = await store.write(state!, etag);
     } catch (e) {
@@ -324,6 +545,9 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
       etag = await store.write(state!, fresh.etag);
     }
   };
+  // Saves never overlap: each waits for the previous one.
+  let queue: Promise<void> = Promise.resolve();
+  const persist = () => (queue = queue.then(save, save));
   applyControl(state, cfg, state.control);
   const loopMs = Math.max(0, (opts.loopSeconds ?? cfg.loopSeconds) * 1000);
   // A lock is taken (one extra write) whenever the run is long or real money is involved.
@@ -340,6 +564,7 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
     }
   }
   let passes = 0;
+  let mode: 'realtime' | 'polling' = 'polling';
   try {
     if (cfg.liveTrading && (!state.geo || nowSec() - state.geo.t > 600)) {
       try {
@@ -348,14 +573,29 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
         /* keep the previous answer */
       }
     }
-    do {
+    let streamed = false;
+    if (cfg.realtime && loopMs >= 20000 && typeof WebSocket !== 'undefined') {
+      try {
+        passes = await runStream(state, cfg, persist, began + loopMs);
+        streamed = true;
+        mode = 'realtime';
+      } catch (e) {
+        log(state, 'warn', `Temps réel indisponible (${String((e as Error)?.message || e).slice(0, 100)}) : repli sur l’interrogation périodique.`);
+      }
+    }
+    let lastSave = Date.now();
+    while (!streamed) {
       const t = Date.now();
       await pass(state, cfg, persist);
       passes++;
       const next = t + cfg.intervalSeconds * 1000;
       if (next - began > loopMs) break;
+      if (Date.now() - lastSave >= cfg.persistSeconds * 1000) {
+        lastSave = Date.now();
+        await persist(); // keeps the dashboard current and the lock alive on long runs
+      }
       await sleep(Math.max(0, next - Date.now()));
-    } while (true);
+    }
     state.tickCount++;
     state.gate = computeGate(state, cfg);
   } catch (e) {
@@ -368,7 +608,7 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
     if (e instanceof ConflictError) return { ok: true, busy: true, passes, ms: Date.now() - began, store: store.kind };
     throw e;
   }
-  return { ok: true, passes, ms: Date.now() - began, store: store.kind };
+  return { ok: true, passes, mode, ms: Date.now() - began, store: store.kind };
 }
 
 export { liveBalance };

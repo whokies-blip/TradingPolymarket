@@ -23,15 +23,18 @@ export interface Genes {
 }
 
 export interface Stats {
+  /** Filled trades, and how many of them won. */
   n: number;
   wins: number;
-  /** Sum of per-trade ROI and ROI² (all time). */
-  sumRoi: number;
+  /** Times the strategy wanted to trade; signals − n = orders that would not have filled. */
+  signals: number;
+  /** Profit per share (payout − all-in cost): sum and sum of squares, all time. */
+  sum: number;
   sumSq: number;
-  /** Exponentially-weighted versions: recent trades count more. */
+  sumCost: number;
+  /** Exponentially-weighted versions: recent trades count more (used to revoke a champion). */
   ewN: number;
-  ewRoi: number;
-  ewSq: number;
+  ew: number;
 }
 
 export interface Strategy {
@@ -144,6 +147,8 @@ export interface Snapshot {
   mid: number | null;
   qFair: number;
   qModel: number | null;
+  /** Milliseconds between asking for data and being able to act on it. */
+  latencyMs: number;
 }
 
 export interface LogEntry {
@@ -160,7 +165,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 1;
+  version: 2;
   createdAt: number;
   updatedAt: number;
   tickCount: number;

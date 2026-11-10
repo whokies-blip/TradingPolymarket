@@ -7,6 +7,7 @@ import type { Trade } from '@/lib/types';
 const usd = (x: number, d = 2) => `${x < 0 ? '−' : ''}${Math.abs(x).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d })} $`;
 const signed = (x: number) => `${x > 0 ? '+' : ''}${usd(x)}`;
 const pct = (x: number | null | undefined, d = 1) => (x === null || x === undefined ? '—' : `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).toFixed(d)} %`);
+const centsSigned = (x: number | null | undefined) => (x === null || x === undefined ? '—' : `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).toFixed(1)}¢`);
 const cents = (x: number | null | undefined) => (x === null || x === undefined ? '—' : `${(x * 100).toFixed(0)}¢`);
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const dateTime = (t: number) => new Date(t * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -117,6 +118,7 @@ export default function Page() {
 
   const acct = v ? v[mode] : null;
   const champion = useMemo(() => v?.strategies.find((s) => s.champion) ?? null, [v]);
+  const bestCandidate = useMemo(() => v?.strategies.filter((s) => s.n >= 5 && s.tstat !== null).sort((x, y) => (y.tstat ?? 0) - (x.tstat ?? 0))[0] ?? null, [v]);
   if (!v || !acct) return <main><h1>Polymarket 5 min</h1><p className="sub">{err || 'Chargement…'}</p></main>;
 
   const stale = clock - v.updatedAt > 150;
@@ -160,6 +162,7 @@ export default function Page() {
                 <span>Probabilité de hausse — juste valeur</span><span>{cents(s.qFair)}</span>
                 <span>Probabilité de hausse — modèle appris</span><span>{s.qModel === null ? 'en apprentissage' : cents(s.qModel)}</span>
                 <span>Achat Hausse / Baisse</span><span>{cents(s.askUp)} / {cents(s.askDown)}</span>
+                <span>Âge des données ({s.source.includes('temps réel') ? 'flux temps réel' : 'interrogation périodique'})</span><span>{s.latencyMs === undefined ? '—' : `${s.latencyMs} ms`}</span>
               </div>
             </div>
           );
@@ -210,7 +213,7 @@ export default function Page() {
       <section className="card">
         <h2>{mode === 'demo' ? 'Capital fictif, trade après trade' : 'Résultat cumulé en argent réel, trade après trade'}</h2>
         <EquityChart points={acct.equity} start={acct.startBankroll} />
-        {mode === 'demo' && !champion && <p className="sub">Aucune stratégie n’a encore fait ses preuves (au moins {v.settings.championMinTrades} trades simulés et un résultat positif) : le compte démo reste à l’écart pendant que les {v.strategies.length} stratégies sont testées en parallèle.</p>}
+        {mode === 'demo' && !champion && <p className="sub">Le compte démo ne trade que lorsqu’une stratégie a un avantage prouvé. Aucune n’y est encore parvenue : il reste à l’écart, ce qui évite de perdre de l’argent sur de la chance.</p>}
       </section>
 
       <section className="card">
@@ -221,17 +224,26 @@ export default function Page() {
 
       <section className="card">
         <div className="row between"><h2>Stratégies en compétition</h2><span className="sub">prochaine sélection dans {v.nextEvolveIn} marchés</span></div>
-        <p className="sub">Chaque stratégie parie fictivement 10 $ aux prix réels du carnet d’ordres. La meilleure, une fois prouvée, devient le champion et pilote le compte ; les perdantes sont remplacées par des variantes des meilleures.</p>
+        <div className="banner" style={{ marginTop: 0, marginBottom: 10, background: champion ? 'var(--good-bg)' : 'var(--accent-bg)', color: 'var(--text)' }}>
+          {champion
+            ? <>Avantage prouvé : <b>{champion.id}</b> gagne {centsSigned(champion.edge)} par part sur {champion.n} trades (t = {champion.tstat?.toFixed(1)}).</>
+            : bestCandidate
+              ? <>Aucun avantage prouvé pour l’instant. Meilleur candidat : <b>{bestCandidate.id}</b>, {centsSigned(bestCandidate.edge)} ± {((bestCandidate.se ?? 0) * 100).toFixed(1)}¢ par part sur {bestCandidate.n} trades (t = {bestCandidate.tstat?.toFixed(1)}). Il faut t ≥ {v.settings.championZ} sur au moins {v.settings.championMinTrades} trades.</>
+              : <>Aucun trade simulé pour l’instant. Une stratégie devient champion avec t ≥ {v.settings.championZ} sur au moins {v.settings.championMinTrades} trades.</>}
+        </div>
+        <p className="sub">Chaque stratégie parie fictivement 10 $. L’ordre n’est compté que si le prix est encore disponible une demi-seconde plus tard dans le carnet, le temps qu’un vrai ordre arrive. « Gain par part » : ce que rapporte en moyenne une part achetée, frais déduits ; il faut qu’il soit positif de façon fiable (t élevé) pour gagner de l’argent.</p>
         <div className="tablewrap">
           <table>
-            <thead><tr><th>Stratégie</th><th>Type</th><th>Réglages</th><th className="num">Trades</th><th className="num">Gagnés</th><th className="num">Rendement moyen</th><th className="num">Rendement récent</th><th className="num">Fiabilité (t)</th></tr></thead>
+            <thead><tr><th>Stratégie</th><th>Type</th><th>Réglages</th><th className="num">Trades</th><th className="num">Ordres exécutés</th><th className="num">Gagnés</th><th className="num">Gain par part</th><th className="num">Récent</th><th className="num">Par dollar misé</th><th className="num">Fiabilité (t)</th></tr></thead>
             <tbody>
               {v.strategies.map((s) => (
                 <tr key={s.id}>
                   <td>{s.id} {s.champion && <span className="badge good">Champion</span>}{s.parent && <div className="muted">issue de {s.parent}</div>}</td>
                   <td>{s.familyLabel}</td><td className="muted">{s.summary}</td><td className="num">{s.n}</td>
+                  <td className="num">{s.signals ? `${Math.round((s.n / s.signals) * 100)} %` : '—'}</td>
                   <td className="num">{s.n ? `${((s.wins / s.n) * 100).toFixed(0)} %` : '—'}</td>
-                  <td className={`num ${cls(s.roi ?? 0)}`}>{pct(s.roi)}</td><td className={`num ${cls(s.recentRoi ?? 0)}`}>{pct(s.recentRoi)}</td>
+                  <td className={`num ${cls(s.edge ?? 0)}`}>{centsSigned(s.edge)}</td><td className={`num ${cls(s.recent ?? 0)}`}>{centsSigned(s.recent)}</td>
+                  <td className={`num ${cls(s.roi ?? 0)}`}>{pct(s.roi)}</td>
                   <td className="num">{s.tstat === null ? '—' : s.tstat.toFixed(2)}</td>
                 </tr>
               ))}
@@ -243,7 +255,7 @@ export default function Page() {
       <section className="grid g2">
         <div className="card">
           <h2>Qualité des prévisions</h2>
-          <p className="sub">Erreur moyenne de chaque prévision (plus bas = meilleur ; 0,693 = pile ou face). Pour gagner, il faut faire mieux que le marché.</p>
+          <p className="sub">Erreur moyenne de chaque prévision sur les ~500 dernières mesures (plus bas = meilleur ; 0,693 = pile ou face). Pour gagner, il faut faire nettement mieux que le marché, frais compris.</p>
           <div className="tablewrap"><table>
             <thead><tr><th>Actif</th><th className="num">Marché</th><th className="num">Juste valeur</th><th className="num">Modèle appris</th><th className="num">Exemples appris</th></tr></thead>
             <tbody>{(['btc', 'eth'] as const).map((a) => { const m = v.models[a]; return (

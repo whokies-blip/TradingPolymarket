@@ -1,6 +1,6 @@
 import { isAdmin } from '@/lib/auth';
 import { config } from '@/lib/config';
-import { initState, liveBalance, log } from '@/lib/engine';
+import { liveBalance, log, migrate } from '@/lib/engine';
 import { liveConfigured } from '@/lib/live';
 import { ConflictError, getStore } from '@/lib/store';
 
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
   const store = getStore();
   for (let attempt = 0; attempt < 4; attempt++) {
     const { state: read, etag } = await store.read();
-    const state = read ?? initState(cfg);
+    const state = migrate(read, cfg);
     if (action === 'kill') state.control = { ...state.control, killSwitch: true, liveArmed: false };
     if (action === 'resume') state.control.killSwitch = false;
     if (action === 'arm') state.control.liveArmed = true;

@@ -2,33 +2,49 @@
 
 Système de trading automatisé pour les marchés **« Bitcoin / Ethereum Up or Down – 5 minutes »** de Polymarket, déployé sur Vercel, avec un mode **Démo** (argent fictif, prix réels) et un mode **Production** (argent réel, verrouillé par défaut).
 
-> **Avertissement.** Rien ne garantit un gain. Ces marchés sont très efficients et Polymarket prélève des frais d'environ 3,5 % de la mise à 50 ¢. Un backtest sur 4 jours (1 152 marchés par actif) montre un avantage apparent qui **disparaît dès que l'information a 10 secondes de retard**. Le mode Démo sert précisément à mesurer, aux prix réels, si un avantage existe. N'activez la Production qu'avec de l'argent que vous pouvez perdre, et seulement si Polymarket est autorisé là où vous vivez.
+> **Avertissement.** Rien ne garantit un gain, et les données disponibles disent plutôt le contraire : voir « Ce que montrent les données ». N'activez la Production qu'avec de l'argent que vous pouvez perdre, et seulement si Polymarket est autorisé là où vous vivez.
+
+## Ce que montrent les données
+
+Tests menés sur 1 152 marchés BTC réels (4 jours, ~1 500 transactions par marché, prix spot à la seconde) :
+
+- **La vitesse décide de tout.** En réagissant en ~0,5 s aux gros écarts entre la juste valeur et le prix du marché (≥ 10 ¢ après frais), la simulation donne **+3,6 ¢ par part** avec une hypothèse d'exécution prudente (t = 2,1) et +6,9 ¢ avec une hypothèse optimiste (t = 4,6). À 1,5 s de retard il ne reste presque rien ; à 2,5 s et au-delà, on perd.
+- **Les petits écarts perdent toujours** : en dessous de ~7 ¢, les frais (7 % × p(1−p)) et les robots plus rapides mangent tout. Un achat « au hasard » coûte environ 3 ¢ par part.
+- **Rien d'autre ne marche** : sur ~80 règles testées à 2-3 s de retard (favori, outsider, momentum, retour à la moyenne, flux d'ordres, modèle appris, ordres passifs), aucune n'a d'avantage positif fiable.
+- **Le marché prévoit mieux que notre modèle dans la dernière minute** (il voit directement le flux Chainlink qui sert au règlement) : le moteur n'ouvre plus de position à ce moment-là.
+- La première version de ce système (un passage toutes les 10 s, champion désigné après 15 trades), rejouée sur ces 4 jours, couronnait une stratégie « chanceuse » 89 % du temps et perdait 45 % du capital démo.
+
+Ces chiffres viennent de 4 jours seulement et d'une exécution simulée : c'est une piste sérieuse, pas une preuve. Le mode Démo temps réel sert à la confirmer ou à l'infirmer, en quelques jours de fonctionnement continu.
+
+Pour rejouer le moteur (mode périodique) sur un historique : `npx tsx scripts/replay.ts <grille.json>` (une grille par marché : cotations exécutables toutes les 10 s et entrées du modèle).
 
 ## Fonctionnement
 
-Chaque minute, Vercel Cron appelle `/api/cron/tick`, qui surveille les marchés pendant ~50 s (un passage toutes les 10 s) :
+Le moteur (`/api/cron/tick`) travaille en **temps réel** par sessions de ~5 minutes qui s'enchaînent :
 
-1. **Données** — prix spot à la seconde (Binance, repli Coinbase en lecture seule), marché et carnet d'ordres Polymarket.
-2. **Juste valeur** — le marché paie « Hausse » si la moyenne des 60 dernières secondes dépasse la moyenne des 60 secondes précédant l'ouverture (vérifié à 98 % sur l'historique). Le modèle calcule la probabilité correspondante à partir de l'écart au prix de départ, de la volatilité et du temps restant.
-3. **24 stratégies en compétition** (5 familles : juste valeur, modèle appris, momentum, retour à la moyenne, suivi du favori). Chacune « parie » fictivement 10 $ aux prix réels du carnet, frais inclus.
-4. **Règlement** sur le résultat officiel publié par Polymarket.
+1. **Flux en continu (WebSocket)** — prix Binance transaction par transaction, et carnet d'ordres Polymarket complet tenu à jour en mémoire (plusieurs centaines de mises à jour par seconde). Une décision toutes les 200 ms. Si les flux sont indisponibles, repli automatique sur une interrogation toutes les 10 s.
+2. **Juste valeur** — le marché paie « Hausse » si la moyenne des 60 dernières secondes dépasse la moyenne des 60 secondes précédant l'ouverture (vérifié à 98 % sur l'historique). Le modèle en déduit une probabilité, calibrée sur 43 776 mesures.
+3. **24 stratégies en compétition** (5 familles). Chacune « parie » fictivement 10 $, au plus une fois par marché. Aucune décision si les flux ont du retard, si l'écart achat/vente est large, ou dans la dernière minute.
+4. **Exécution réaliste** — un ordre fictif n'est compté que si le prix est encore dans le carnet une demi-seconde plus tard, le temps qu'un vrai ordre arrive. Sans cela, des stratégies perdantes paraissent rentables.
+5. **Règlement** sur le résultat officiel publié par Polymarket.
 
 ### Auto-amélioration
 
-- **Modèle en ligne** : une régression logistique part d'une copie du marché et apprend, après chaque marché réglé, à corriger la probabilité. Le tableau de bord compare son erreur à celle du marché.
-- **Champion** : la stratégie au meilleur rendement prudent (moyenne − 1 erreur-type, les trades récents pesant plus) pilote le compte. Sans stratégie prouvée et rentable, le système **ne trade pas**.
-- **Évolution** : tous les 48 marchés réglés, les stratégies perdantes sont remplacées par des variantes mutées des meilleures.
+- **Modèle en ligne** : une régression logistique part d'une copie du prix du marché et apprend, après chaque marché réglé, à le corriger.
+- **Champion** : une stratégie ne pilote le compte que si son gain moyen par part est positif avec t ≥ 2 sur au moins 40 trades, et si elle ne perd pas sur ses ~100 derniers trades. Sinon le système **ne trade pas**.
+- **Mise** : un quart de Kelly, calculé sur l'avantage réellement obtenu par le champion (moyenne − 1 erreur-type), jamais sur l'avantage qu'il annonce. BTC et ETH évoluant dans le même sens 83 % du temps, deux paris dans la même fenêtre partagent le même budget de risque.
+- **Évolution** : tous les 96 marchés réglés, les stratégies clairement perdantes (t < −1 sur ≥ 60 trades) ou inactives sont remplacées par des variantes des meilleures. Volontairement lent : chaque remplacement efface des preuves.
 
 ### Démo et Production
 
 | | Démo | Production |
 |---|---|---|
 | Argent | fictif (1 000 $ par défaut) | réel (USDC sur Polymarket) |
-| Prix | carnet d'ordres réel, frais réels | ordres réels « fill-or-kill » |
-| Mise | Kelly fractionné (¼), max 3 % du capital | fixe (`LIVE_STAKE_USD`, 5 $ par défaut) |
-| Déclenchement | dès qu'un champion existe | copie le champion **seulement si toutes les conditions sont remplies** |
+| Prix | carnet d'ordres réel, relu après le temps de trajet, frais réels | ordres réels « fill-or-kill », envoyés immédiatement |
+| Mise | Kelly fractionné (¼) sur l'avantage prouvé, max 3 % du capital | fixe (`LIVE_STAKE_USD`, 5 $ par défaut), un seul pari par fenêtre |
+| Déclenchement | dès qu'un champion est prouvé | copie le champion **seulement si toutes les conditions sont remplies** |
 
-Conditions de la Production : `LIVE_TRADING=true`, portefeuille configuré, région non bloquée par Polymarket, armement manuel depuis le tableau de bord, arrêt d'urgence inactif, champion avec ≥ 100 trades et t ≥ 2, compte démo rentable sur ses 50 derniers trades, perte du jour sous la limite.
+Conditions de la Production : `LIVE_TRADING=true`, portefeuille configuré, région non bloquée par Polymarket, armement manuel depuis le tableau de bord, arrêt d'urgence inactif, champion avec ≥ 150 trades et t ≥ 3, compte démo rentable sur ses 50 derniers trades, perte du jour sous la limite. L'arrêt d'urgence est pris en compte en 10 secondes au plus.
 
 **Le chemin d'ordres réels n'a jamais été exécuté avec de vrais fonds** : commencez avec la mise minimale. Les gains des marchés gagnés doivent être encaissés (« Claim ») dans l'interface Polymarket.
 
@@ -37,10 +53,10 @@ Conditions de la Production : `LIVE_TRADING=true`, portefeuille configuré, rég
 1. Importer le dépôt dans Vercel (Next.js détecté automatiquement).
 2. Connecter un stockage au projet : **Vercel Blob** (privé) ou **Upstash Redis**. Sans stockage, l'historique n'est pas conservé.
 3. Définir `CRON_SECRET` et `ADMIN_TOKEN` (voir `.env.example` pour toutes les variables).
-4. **Déclenchement du moteur** — le moteur doit être appelé en continu :
-   - **Vercel Pro** : remplacer le `schedule` de `vercel.json` par `* * * * *` (cron à la minute, chaque appel surveille ~50 s).
-   - **Vercel Hobby** (un seul cron par jour autorisé) : le workflow `.github/workflows/tick.yml` appelle le moteur toutes les 15 s. Il s'active une fois présent sur la branche par défaut, avec la variable de dépôt `TICK_URL` (ex. `https://tradingpolymarket.vercel.app`) et le secret `CRON_SECRET`. Les crons GitHub peuvent prendre du retard ; pour de l'argent réel, préférez Vercel Pro.
-5. **Quotas** — le moteur écrit son état à chaque appel. Le quota gratuit de Vercel Blob (Hobby) est trop faible pour un usage continu : utilisez Upstash Redis (offre gratuite suffisante) ou Vercel Pro.
+4. **Déclenchement du moteur** — le temps réel demande une fonction qui tourne en permanence :
+   - **Vercel Pro** : remplacer le `schedule` de `vercel.json` par `* * * * *`. Chaque session dure ~5 minutes ; les appels en trop sont ignorés, et une session interrompue est relancée dans la minute. Comptez de l'ordre de 20 à 25 $ par mois d'usage (fonction active en continu), en plus de l'abonnement — estimation à vérifier sur votre facture.
+   - **Vercel Hobby** (un seul cron par jour, et un budget de calcul gratuit trop petit pour tourner 24 h/24) : le workflow `.github/workflows/tick.yml` enchaîne les sessions. Il s'active une fois présent sur la branche par défaut, avec la variable de dépôt `TICK_URL` (ex. `https://tradingpolymarket.vercel.app`) et le secret `CRON_SECRET`. À réserver à des essais de quelques heures par jour.
+5. **Stockage** — le moteur sauvegarde son état toutes les 30 s. Le quota gratuit de Vercel Blob (Hobby) est trop faible pour cela : utilisez Upstash Redis (offre gratuite suffisante) ou Vercel Pro.
 
 Pour la Production, ajouter `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, puis armer depuis l'onglet Production.
 

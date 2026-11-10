@@ -46,7 +46,11 @@ export function computeFeatures(s: Series, windowStart: number, strike: number, 
   return { elapsed, spot, strike, sigma, z, mom60: mom(60), mom300: mom(300), mom900: mom(900), flow: flowImbalance(s, now, 60) };
 }
 
-export const fairProb = (z: number, volMult = 1) => phi(z / volMult);
+/**
+ * Probability of Up. Calibrated on 43,776 samples: the plain normal curve is right on average
+ * but over-confident in the tails (says 99.8%, happens 98.7%), hence the 1% floor on each side.
+ */
+export const fairProb = (z: number, volMult = 1) => 0.01 + 0.98 * phi(z / volMult);
 
 export const N_FEATURES = 8;
 
@@ -68,7 +72,7 @@ export function predict(m: ModelState, x: number[]): number {
 
 /** One online gradient step per observation, once the real outcome is known. */
 export function learn(m: ModelState, obs: Obs[], up: 0 | 1, lr: number): void {
-  const a = 0.02; // smoothing of the skill scores
+  const a = 0.002; // slow smoothing (~500 samples): a short window would just show noise
   for (const o of obs) {
     const p = predict(m, o.x);
     m.llModel += a * (logLoss(p, up) - m.llModel);
