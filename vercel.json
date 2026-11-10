@@ -1,7 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [{ "path": "/api/cron/tick", "schedule": "0 0 * * *" }],
-  "functions": {
-    "src/app/api/live/route.ts": { "supportsCancellation": true }
-  }
+  "crons": [{ "path": "/api/cron/tick", "schedule": "0 0 * * *" }]
 }

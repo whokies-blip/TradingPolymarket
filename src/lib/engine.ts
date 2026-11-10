@@ -593,9 +593,10 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
   let queue: Promise<void> = Promise.resolve();
   const persist = () => (queue = queue.then(save, save));
   applyControl(state, cfg, state.control);
-  // A lock is taken (one extra write) whenever the run is long or real money is involved.
-  // Short paper-only runs rely on the final compare-and-swap instead: if two overlap, one is dropped.
-  const locked = loopMs > 0 || liveConfigured(cfg);
+  // A lock (one extra write) stops two sessions running at once. It is always taken when real money
+  // is involved. On Vercel Blob, whose free plan allows only 2,000 writes a month, paper-only
+  // sessions skip it: if two overlap, the one that finishes last is simply discarded.
+  const locked = liveConfigured(cfg) || (loopMs > 0 && store.kind !== 'blob');
   if (locked) {
     state.lock = { at: nowSec(), id, ttl: Math.min(saveEvery, loopMs / 1000) + 45 };
     try {

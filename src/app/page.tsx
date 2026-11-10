@@ -102,11 +102,21 @@ export default function Page() {
   }, []);
   const engineRef = useRef<Engine>('off');
   engineRef.current = engine;
+  const updatedRef = useRef(0);
+  updatedRef.current = v?.updatedAt ?? 0;
   useEffect(() => {
     try { setToken(localStorage.getItem('adminToken') || ''); setRunning(localStorage.getItem('engineOn') === '1'); } catch {}
     load();
     // While the live stream is connected it carries everything; otherwise poll the saved state.
-    const a = setInterval(() => { if (engineRef.current !== 'live') load(); }, 5000), b = setInterval(() => setClock(Date.now() / 1000), 1000);
+    // Poll gently: often while something is running elsewhere, rarely when nothing is happening.
+    let lastLoad = Date.now();
+    const a = setInterval(() => {
+      if (engineRef.current === 'live') return;
+      const idle = Date.now() / 1000 - (updatedRef.current || 0) > 600;
+      if (Date.now() - lastLoad < (idle ? 60000 : 5000)) return;
+      lastLoad = Date.now();
+      load();
+    }, 5000), b = setInterval(() => setClock(Date.now() / 1000), 1000);
     return () => { clearInterval(a); clearInterval(b); };
   }, [load]);
 
@@ -182,7 +192,7 @@ export default function Page() {
 
   const stale = engine !== 'live' && clock - v.updatedAt > 150;
   const engineLabel: Record<Engine, string> = {
-    off: 'Moteur à l’arrêt', connecting: 'Connexion au moteur…', live: 'Moteur actif · temps réel', busy: 'Moteur déjà piloté par une autre page ou un autre appareil',
+    off: 'Moteur à l’arrêt', connecting: 'Connexion au moteur…', live: 'Moteur actif · temps réel', busy: 'Une session est déjà en cours sur le serveur : reprise automatique à sa fin (5 minutes au plus)',
     error: 'Flux interrompu, nouvelle tentative…', denied: 'Jeton administrateur refusé',
   };
   const gateOpen = v.gate.every((g) => g.ok);
@@ -209,7 +219,7 @@ export default function Page() {
           <div className="row between">
             <div style={{ flex: 1, minWidth: 240 }}>
               <h2 style={{ marginBottom: 4 }}>Moteur temps réel</h2>
-              <div className="sub">Le moteur tourne sur le serveur tant que cette page reste ouverte : il suit le carnet d’ordres en continu et vous envoie ce qu’il voit, seconde par seconde. Fermez la page ou cliquez sur Arrêter pour le stopper.</div>
+              <div className="sub">Le moteur tourne sur le serveur tant que cette page reste ouverte : il suit le carnet d’ordres en continu et vous envoie ce qu’il voit, seconde par seconde. Quand vous fermez la page ou cliquez sur Arrêter, la session en cours va à son terme (5 minutes au plus), se sauvegarde, puis le moteur s’arrête.</div>
             </div>
             <div className="row">
               {v.settings.adminRequired && (

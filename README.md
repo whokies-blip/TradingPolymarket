@@ -73,7 +73,9 @@ Sur Vercel, le moteur temps réel tourne **sur les serveurs de Vercel** (qui gar
 4. **Faire tourner le moteur** — deux façons :
    - **Depuis le tableau de bord (tous forfaits)** : saisir le jeton administrateur puis cliquer sur « Démarrer le moteur ». Chaque session dure ~5 minutes et la page se reconnecte aussitôt : le moteur tourne tant que la page reste ouverte sur un appareil allumé, et s'arrête quand on la ferme.
    - **En continu sans page ouverte (Vercel Pro)** : remplacer le `schedule` de `vercel.json` par `* * * * *`. Les appels en trop sont ignorés et une session interrompue est relancée dans la minute.
-5. **Budget** — une fonction active en permanence consomme le quota de calcul du compte (partagé avec vos autres projets). Sur Hobby, surveillez la page Usage de Vercel et ne laissez pas tourner 24 h/24. Le moteur ne sauvegarde qu'en fin de session sur Vercel Blob, pour ménager son quota d'écritures.
+5. **Budget (forfait Hobby)** — deux quotas limitent la durée de fonctionnement :
+   - **Stockage Vercel Blob : 2 000 écritures par mois.** Le moteur n'écrit qu'une fois par session de 5 minutes, soit environ 5 heures de fonctionnement par jour en moyenne. Pour tourner davantage, connectez **Upstash Redis** au projet (Vercel → Storage) : il est utilisé automatiquement à la place de Blob.
+   - **Calcul** : une fonction active consomme le quota du compte, partagé avec vos autres projets. Surveillez la page Usage de Vercel.
 
 Pour la Production, ajouter `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, puis armer depuis l'onglet Production.
 
