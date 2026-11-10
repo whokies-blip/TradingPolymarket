@@ -55,11 +55,20 @@ function blob(): Store {
     kind: 'blob',
     durable: true,
     async read() {
-      const { get } = await import('@vercel/blob');
+      const { get, head, BlobNotFoundError } = await import('@vercel/blob');
+      // Take the version from the API first (the download's ETag header is not the same token),
+      // then the content: if a write lands in between, our next write is rejected, which is safe.
+      let etag: string;
+      try {
+        etag = (await head(KEY)).etag;
+      } catch (e) {
+        if (e instanceof BlobNotFoundError) return { state: null, etag: null };
+        throw e;
+      }
       const res = await get(KEY, { access: 'private', useCache: false });
       if (!res || res.statusCode !== 200) return { state: null, etag: null };
       const text = await new Response(res.stream).text();
-      return { state: JSON.parse(text) as State, etag: res.blob.etag };
+      return { state: JSON.parse(text) as State, etag };
     },
     async write(state, etag) {
       const { put, BlobPreconditionFailedError } = await import('@vercel/blob');
