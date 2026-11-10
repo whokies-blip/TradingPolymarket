@@ -7,6 +7,7 @@ export const CLOB = 'https://clob.polymarket.com';
 export const slugOf = (asset: Asset, start: number) => `${asset}-updown-5m-${start}`;
 
 interface GammaMarket {
+  conditionId?: string;
   closed?: boolean;
   outcomes?: string;
   outcomePrices?: string;
@@ -38,6 +39,7 @@ export async function fetchWindow(asset: Asset, start: number): Promise<WindowRe
     asset,
     start,
     slug,
+    conditionId: m.conditionId,
     upToken: tokens[up],
     downToken: tokens[1 - up],
     feeRate: m.feesEnabled === false ? 0 : (m.feeSchedule?.rate ?? 0.07),
@@ -50,8 +52,20 @@ export async function fetchWindow(asset: Asset, start: number): Promise<WindowRe
   };
 }
 
-/** Final outcome as published by Polymarket, or null while unresolved. */
-export async function fetchOutcome(asset: Asset, start: number): Promise<Side | null> {
+/**
+ * Final outcome as published by Polymarket, or null while unresolved.
+ * The order-book API reports the winner first; the catalogue API can lag by minutes.
+ */
+export async function fetchOutcome(asset: Asset, start: number, conditionId?: string): Promise<Side | null> {
+  if (conditionId) {
+    try {
+      const m = await getJson<{ closed?: boolean; tokens?: { outcome?: string; winner?: boolean }[] }>(`${CLOB}/markets/${conditionId}`);
+      const winner = m.closed ? m.tokens?.find((t) => t.winner) : undefined;
+      if (winner?.outcome) return winner.outcome.toLowerCase() === 'up' ? 'up' : 'down';
+    } catch {
+      /* fall through to the catalogue API */
+    }
+  }
   const m = await gammaMarket(slugOf(asset, start));
   if (!m?.closed || !m.outcomePrices || !m.outcomes) return null;
   const prices: string[] = JSON.parse(m.outcomePrices);

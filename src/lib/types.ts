@@ -88,6 +88,7 @@ export interface WindowRec {
   asset: Asset;
   start: number;
   slug: string;
+  conditionId?: string;
   upToken: string;
   downToken: string;
   feeRate: number;

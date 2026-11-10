@@ -244,7 +244,7 @@ async function settle(state: State, cfg: Config) {
       w.lastResolveCheck = now;
       let outcome: Side | 'void' | null = null;
       try {
-        outcome = await fetchOutcome(w.asset, w.start);
+        outcome = await fetchOutcome(w.asset, w.start, w.conditionId);
       } catch {
         /* retry on the next pass */
       }
