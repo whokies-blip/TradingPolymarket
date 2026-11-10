@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { View } from '@/lib/view';
-import type { Trade } from '@/lib/types';
+import type { LiveAsset, LiveFrame, Trade } from '@/lib/types';
 
 const usd = (x: number, d = 2) => `${x < 0 ? '−' : ''}${Math.abs(x).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d })} $`;
 const signed = (x: number) => `${x > 0 ? '+' : ''}${usd(x)}`;
@@ -49,6 +49,88 @@ function EquityChart({ points, start }: { points: [number, number][]; start: num
   );
 }
 
+type Hist = [number, number][];
+
+/** Spot price over the last two minutes, against the price to beat. */
+function LiveLine({ points, strike, now }: { points: Hist; strike: number | null; now: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 600, H = 120, L = 6, R = 78, T = 10, B = 10, SPAN = 120;
+  if (points.length < 2) return <div className="spark muted">Collecte des premiers prix…</div>;
+  const ys = points.map((p) => p[1]).concat(strike ?? []);
+  const lo = Math.min(...ys), hi = Math.max(...ys), pad = Math.max((hi - lo) * 0.15, hi * 0.00002);
+  const x = (t: number) => L + ((t - (now - SPAN)) / SPAN) * (W - L - R);
+  const y = (v: number) => T + (1 - (v - (lo - pad)) / (hi - lo + 2 * pad)) * (H - T - B);
+  const vis = points.filter((p) => p[0] >= now - SPAN);
+  if (vis.length < 2) return <div className="spark muted">Collecte des premiers prix…</div>;
+  const path = vis.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+  const last = vis[vis.length - 1];
+  const h = hover !== null ? vis[Math.min(hover, vis.length - 1)] : null;
+  return (
+    <div className="spark chart" ref={ref}
+      onMouseMove={(e) => { const r = ref.current!.getBoundingClientRect(); const t = now - SPAN + (((e.clientX - r.left) / r.width) * W - L) / (W - L - R) * SPAN; let best = 0; vis.forEach((p, i) => { if (Math.abs(p[0] - t) < Math.abs(vis[best][0] - t)) best = i; }); setHover(best); }}
+      onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Prix sur les deux dernières minutes, comparé au prix à battre">
+        {strike !== null && <>
+          <line x1={L} x2={W - R} y1={y(strike)} y2={y(strike)} stroke="var(--muted)" strokeDasharray="4 4" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+          <text x={W - R + 6} y={y(strike) + 4} fontSize="11" fill="var(--muted)">prix à battre</text>
+        </>}
+        <path d={path} fill="none" stroke="var(--series)" strokeWidth="2" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        <circle cx={x(last[0])} cy={y(last[1])} r="4" fill="var(--series)" stroke="var(--surface)" strokeWidth="2" />
+        {h && <line x1={x(h[0])} x2={x(h[0])} y1={T} y2={H - B} stroke="var(--muted)" strokeWidth="1" vectorEffect="non-scaling-stroke" />}
+      </svg>
+      {h && <div className="tip" style={{ left: `${Math.min(70, (x(h[0]) / W) * 100)}%` }}><b>{usd(h[1])}</b> · il y a {Math.max(0, Math.round(now - h[0]))} s</div>}
+    </div>
+  );
+}
+
+function Meter({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div className="meter">
+      <span>{label}</span>
+      <div className="track" aria-hidden><i style={{ width: `${Math.round((value ?? 0) * 100)}%` }} /></div>
+      <b>{value === null ? '—' : `${Math.round(value * 100)} %`}</b>
+    </div>
+  );
+}
+
+/** One market, live: spot price, the price to beat, both probabilities and the Polymarket order book. */
+function LiveMarket({ asset, a, start, now, hist, dir }: { asset: 'btc' | 'eth'; a: LiveAsset; start: number; now: number; hist: Hist; dir: number }) {
+  const left = Math.max(0, start + 300 - now);
+  const diff = a.spot !== null && a.strike !== null ? a.spot - a.strike : null;
+  const maxSize = Math.max(1, ...a.asks.map((l) => l[1]), ...a.bids.map((l) => l[1]));
+  const spread = a.asks[0] && a.bids[0] ? a.asks[0][0] - a.bids[0][0] : null;
+  const shares = (n: number) => n.toLocaleString('fr-FR');
+  return (
+    <div className="card">
+      <div className="live-head">
+        <h2 style={{ margin: 0 }}><span className="live-dot" aria-hidden />{asset.toUpperCase()} · fenêtre de {time(start).slice(0, 5)}</h2>
+        <span className="badge">{left > 0 ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} restantes` : 'clôture…'}</span>
+      </div>
+      <div className="bar" aria-hidden style={{ marginTop: 8 }}><i style={{ width: `${Math.min(100, ((300 - left) / 300) * 100)}%` }} /></div>
+      <div className="live-head" style={{ marginTop: 10 }}>
+        <div className={`live-price ${dir > 0 ? 'pos' : dir < 0 ? 'neg' : ''}`}>{a.spot === null ? '—' : usd(a.spot)} <span style={{ fontSize: 16 }}>{dir > 0 ? '▲' : dir < 0 ? '▼' : ''}</span></div>
+        <div className="sub">{diff === null || a.strike === null ? 'prix à battre en attente' : <>prix à battre {usd(a.strike)} · <b className={cls(diff)}>{diff >= 0 ? 'au-dessus de' : 'en dessous de'} {usd(Math.abs(diff))}</b></>}</div>
+      </div>
+      <LiveLine points={hist} strike={a.strike} now={now} />
+      <Meter label="Hausse selon le marché" value={a.mid} />
+      <Meter label="Hausse selon le modèle" value={a.qFair} />
+      <div className="book">
+        <div className="book-title"><span>Carnet d’ordres Polymarket — « Hausse »</span><span>{a.bookAgeMs === null ? 'connexion…' : `mis à jour il y a ${a.bookAgeMs} ms`}</span></div>
+        {a.asks.length === 0 && a.bids.length === 0 ? <div className="muted">Carnet vide (marché en cours de clôture ou d’ouverture).</div> : <>
+          {[...a.asks].reverse().map(([p, n]) => (
+            <div className="book-row ask" key={`a${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{(p * 100).toFixed(0)}¢</b></span><span className="side">à vendre</span><span>{shares(n)} parts</span></div>
+          ))}
+          <div className="book-spread">{spread === null ? 'un seul côté coté' : `écart ${(spread * 100).toFixed(0)}¢ entre le meilleur vendeur et le meilleur acheteur`}</div>
+          {a.bids.map(([p, n]) => (
+            <div className="book-row bid" key={`b${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{(p * 100).toFixed(0)}¢</b></span><span className="side">à acheter</span><span>{shares(n)} parts</span></div>
+          ))}
+        </>}
+      </div>
+    </div>
+  );
+}
+
 function Tile({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: string }) {
   return (
     <div className="card tile">
@@ -90,6 +172,9 @@ export default function Page() {
   const [balance, setBalance] = useState<number | null>(null);
   const [clock, setClock] = useState(Date.now() / 1000);
   const [running, setRunning] = useState(false);
+  const [live, setLive] = useState<LiveFrame | null>(null);
+  const [fps, setFps] = useState(0);
+  const hist = useRef<{ btc: Hist; eth: Hist; dir: { btc: number; eth: number }; frames: number }>({ btc: [], eth: [], dir: { btc: 0, eth: 0 }, frames: 0 });
   const [engine, setEngine] = useState<Engine>('off');
 
   const load = useCallback(async () => {
@@ -105,11 +190,21 @@ export default function Page() {
   const updatedRef = useRef(0);
   updatedRef.current = v?.updatedAt ?? 0;
   useEffect(() => {
-    try { setToken(localStorage.getItem('adminToken') || ''); setRunning(localStorage.getItem('engineOn') === '1'); } catch {}
+    try {
+      // A link ending in #jeton=… signs this browser in and starts the engine (the part after # never leaves the browser).
+      const fromLink = window.location.hash.match(/jeton=([^&]+)/)?.[1];
+      if (fromLink) {
+        localStorage.setItem('adminToken', decodeURIComponent(fromLink));
+        localStorage.setItem('engineOn', '1');
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+      setToken(localStorage.getItem('adminToken') || ''); setRunning(localStorage.getItem('engineOn') === '1');
+    } catch {}
     load();
     // While the live stream is connected it carries everything; otherwise poll the saved state.
     // Poll gently: often while something is running elsewhere, rarely when nothing is happening.
     let lastLoad = Date.now();
+    const c = setInterval(() => { setFps(hist.current.frames); hist.current.frames = 0; }, 1000);
     const a = setInterval(() => {
       if (engineRef.current === 'live') return;
       const idle = Date.now() / 1000 - (updatedRef.current || 0) > 600;
@@ -117,13 +212,13 @@ export default function Page() {
       lastLoad = Date.now();
       load();
     }, 5000), b = setInterval(() => setClock(Date.now() / 1000), 1000);
-    return () => { clearInterval(a); clearInterval(b); };
+    return () => { clearInterval(a); clearInterval(b); clearInterval(c); };
   }, [load]);
 
   // The engine runs on the server for as long as this page keeps a live session open:
   // each session lasts about five minutes, and we reconnect as soon as one ends.
   useEffect(() => {
-    if (!running) { setEngine('off'); return; }
+    if (!running) { setEngine('off'); setLive(null); return; }
     const abort = new AbortController();
     let wake: { release: () => Promise<void> } | null = null;
     (navigator as unknown as { wakeLock?: { request: (t: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request('screen').then((w) => { wake = w; }).catch(() => {});
@@ -149,7 +244,24 @@ export default function Page() {
               if (!line) continue;
               const f = JSON.parse(line);
               if (f.type === 'view') { setV(f.view); setErr(''); setEngine('live'); }
-              else if (f.type === 'tick') { setV((prev) => (prev ? { ...prev, now: f.now, snapshots: f.snapshots } : prev)); setEngine('live'); }
+              else if (f.type === 'live') {
+                const hs = hist.current;
+                hs.frames++;
+                // A new session starts by sending the last two minutes, so the chart is full at once.
+                if (f.history) for (const k of ['btc', 'eth'] as const) {
+                  const known = hs[k].length ? hs[k][hs[k].length - 1][0] : 0;
+                  if (f.history[k]?.length && f.t - known > 3) hs[k] = f.history[k].filter((p: [number, number]) => p[0] < f.t);
+                }
+                for (const k of ['btc', 'eth'] as const) {
+                  const spot = f.assets[k]?.spot;
+                  if (typeof spot !== 'number') continue;
+                  const prev = hs[k][hs[k].length - 1];
+                  if (prev && spot !== prev[1]) hs.dir[k] = spot > prev[1] ? 1 : -1;
+                  hs[k].push([f.t, spot]);
+                  if (hs[k].length > 900) hs[k].splice(0, hs[k].length - 800);
+                }
+                setLive(f); setEngine('live');
+              }
               else if (f.type === 'end') {
                 if (f.busy) { setEngine('busy'); pause = 15000; }
                 else if (f.mode !== 'realtime') { setEngine('error'); pause = 5000; }
@@ -219,7 +331,7 @@ export default function Page() {
           <div className="row between">
             <div style={{ flex: 1, minWidth: 240 }}>
               <h2 style={{ marginBottom: 4 }}>Moteur temps réel</h2>
-              <div className="sub">Le moteur tourne sur le serveur tant que cette page reste ouverte : il suit le carnet d’ordres en continu et vous envoie ce qu’il voit, seconde par seconde. Quand vous fermez la page ou cliquez sur Arrêter, la session en cours va à son terme (5 minutes au plus), se sauvegarde, puis le moteur s’arrête.</div>
+              <div className="sub">Le moteur tourne sur le serveur tant que cette page reste ouverte : il suit le carnet d’ordres en continu et vous envoie ce qu’il voit, cinq fois par seconde. Quand vous fermez la page ou cliquez sur Arrêter, la session en cours va à son terme (5 minutes au plus), se sauvegarde, puis le moteur s’arrête.</div>
             </div>
             <div className="row">
               {v.settings.adminRequired && (
@@ -236,7 +348,15 @@ export default function Page() {
       {!v.settings.durable && <div className="banner">Stockage non persistant : l’historique sera perdu entre deux exécutions. Connectez un stockage Vercel Blob ou Upstash Redis au projet.</div>}
       {v.control.killSwitch && <div className="banner">Arrêt d’urgence actif : aucun nouveau trade (démo ou réel) n’est ouvert.</div>}
 
-      <section className="grid g2">
+      {live && engine === 'live' && (
+        <section>
+          <div className="sub" style={{ marginBottom: 8 }}><span className="live-dot" aria-hidden />En direct depuis le serveur · {fps} mises à jour par seconde</div>
+          <div className="grid g2">
+            {(['btc', 'eth'] as const).map((k) => <LiveMarket key={k} asset={k} a={live.assets[k]} start={live.windowStart} now={live.t} hist={hist.current[k]} dir={hist.current.dir[k]} />)}
+          </div>
+        </section>
+      )}
+      {!(live && engine === 'live') && <section className="grid g2">
         {(['btc', 'eth'] as const).map((a) => {
           const s = v.snapshots[a];
           if (!s) return <div className="card" key={a}><h2>{a.toUpperCase()}</h2><p className="muted">En attente du premier passage du moteur.</p></div>;
@@ -244,7 +364,7 @@ export default function Page() {
           const diff = s.spot / s.strike - 1;
           return (
             <div className="card" key={a}>
-              <div className="row between"><h2>{a.toUpperCase()} · fenêtre de {time(s.windowStart).slice(0, 5)}</h2><span className="badge">{left > 0 ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} restantes` : 'clôture…'}</span></div>
+              <div className="row between"><h2>{a.toUpperCase()} · fenêtre de {time(s.windowStart).slice(0, 5)} <span className="badge warn">dernier état enregistré — pas en direct</span></h2><span className="badge">{left > 0 ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} restantes` : 'clôture…'}</span></div>
               <div className="bar" aria-hidden><i style={{ width: `${Math.min(100, ((300 - left) / 300) * 100)}%` }} /></div>
               <div className="kv" style={{ marginTop: 10 }}>
                 <span>Prix actuel</span><span>{usd(s.spot)}</span>
@@ -258,7 +378,7 @@ export default function Page() {
             </div>
           );
         })}
-      </section>
+      </section>}
 
       {mode === 'live' && (
         <section className="grid g2">

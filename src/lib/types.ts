@@ -187,3 +187,26 @@ export interface State {
   log: LogEntry[];
   recent: { key: string; asset: Asset; start: number; outcome: Side | 'void'; shadows: number }[];
 }
+
+/** What the real-time engine sees right now, sent to the dashboard several times a second. */
+export interface LiveAsset {
+  spot: number | null;
+  strike: number | null;
+  /** Market's probability of Up (mid of the Up book), and the model's. */
+  mid: number | null;
+  qFair: number | null;
+  qModel: number | null;
+  /** Order book of the "Up" outcome, best prices first: [price, shares]. */
+  asks: [number, number][];
+  bids: [number, number][];
+  /** Milliseconds since the last order-book update was received. */
+  bookAgeMs: number | null;
+}
+
+export interface LiveFrame {
+  t: number;
+  windowStart: number;
+  assets: Record<Asset, LiveAsset>;
+  /** Only in the first frame of a session: the last two minutes of spot prices, [time, price]. */
+  history?: Record<Asset, [number, number][]>;
+}

@@ -7,7 +7,7 @@ import { BookFeed, SpotFeed } from './feeds';
 import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
 import { FAMILY_LABEL, emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
-import type { Account, Asset, GateCheck, LogEntry, Side, State, Strategy, Trade, WindowRec } from './types';
+import type { Account, Asset, GateCheck, LiveFrame, LogEntry, Side, State, Strategy, Trade, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -356,7 +356,7 @@ export function improve(state: State, cfg: Config, now = nowSec()) {
  * book in memory, a decision every 200 ms. Paper orders are checked against the book half a second
  * later (the time a real order needs to arrive); real orders are sent immediately.
  */
-async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number, saveEvery: number, signal?: AbortSignal, onFrame?: (state: State) => void): Promise<number> {
+async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number, saveEvery: number, signal?: AbortSignal, onFrame?: (state: State) => void, onLive?: (frame: LiveFrame) => void): Promise<number> {
   const series = Object.fromEntries(await Promise.all(ASSETS.map(async (a) => [a, await getSeries(a)] as const))) as Record<Asset, Series>;
   if (ASSETS.some((a) => series[a].source !== 'binance')) throw new Error('flux de prix principal indisponible');
   const spot = new SpotFeed();
@@ -397,6 +397,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   let lastSettle = 0;
   let lastSave = Date.now();
   let evals = 0;
+  let sentHistory = false;
 
   const evalAsset = (asset: Asset, now: number, start: number, feed: BookFeed) => {
     const win = state.windows[`${asset}-${start}`];
@@ -487,6 +488,27 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
         }
       }
 
+      // Several times a second: what the engine sees right now (prices and order book), for the dashboard.
+      if (onLive) {
+        const shown = feed && bookStart === start && feed.ready() ? feed : null;
+        const assets = {} as LiveFrame['assets'];
+        for (const a of ASSETS) {
+          const w = state.windows[`${a}-${start}`];
+          const snap = state.snapshots[a]?.windowStart === start ? state.snapshots[a] : undefined;
+          const depth = (levels: Level[]) => levels.slice(0, 8).map((l) => [l.price, Math.round(l.size)] as [number, number]);
+          assets[a] = {
+            spot: spot.last[a] ?? null, strike: w?.strike ?? null, mid: snap?.mid ?? null, qFair: snap?.qFair ?? null, qModel: snap?.qModel ?? null,
+            asks: shown && w ? depth(shown.asks(w.upToken)) : [], bids: shown && w ? depth(shown.bids(w.upToken)) : [], bookAgeMs: shown ? Date.now() - shown.lastMsg : null,
+          };
+        }
+        const frame: LiveFrame = { t: now, windowStart: start, assets };
+        if (!sentHistory) {
+          sentHistory = true;
+          frame.history = Object.fromEntries(ASSETS.map((a) => [a, series[a].ticks.slice(-120).map((k) => [k.t, k.c] as [number, number])])) as LiveFrame['history'];
+        }
+        onLive(frame);
+      }
+
       if (now - lastSettle >= 10 && !settling) {
         lastSettle = now;
         settling = true;
@@ -556,6 +578,8 @@ export interface TickOptions {
   onSave?: (state: State) => void;
   /** Called about once a second during a real-time session with the live state (do not mutate). */
   onFrame?: (state: State) => void;
+  /** Called several times a second during a real-time session with live prices and order books. */
+  onLive?: (frame: LiveFrame) => void;
 }
 
 export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
@@ -620,7 +644,7 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
     let streamed = false;
     if (cfg.realtime && loopMs >= 20000 && typeof WebSocket !== 'undefined') {
       try {
-        passes = await runStream(state, cfg, persist, began + loopMs, saveEvery, opts.signal, opts.onFrame);
+        passes = await runStream(state, cfg, persist, began + loopMs, saveEvery, opts.signal, opts.onFrame, opts.onLive);
         streamed = true;
         mode = 'realtime';
       } catch (e) {

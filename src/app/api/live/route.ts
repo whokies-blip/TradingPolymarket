@@ -8,8 +8,8 @@ export const maxDuration = 300;
 
 /**
  * Runs one real-time engine session on the server and streams what it sees, one JSON object per
- * line, to the dashboard that requested it: a light frame every second (prices, probabilities) and
- * the full view every five. The dashboard reconnects when the session ends, so the engine keeps
+ * line, to the dashboard that requested it: prices and order books five times a second, and the
+ * full view every five seconds. The dashboard reconnects when the session ends, so the engine keeps
  * running for as long as the page stays open — no scheduler needed.
  */
 export async function GET(req: Request) {
@@ -35,7 +35,11 @@ export async function GET(req: Request) {
       send({ type: 'hello' });
       runTick({
         signal: abort.signal,
-        onFrame: (state) => send(n++ % 5 === 0 ? { type: 'view', view: publicView(state, store) } : { type: 'tick', now: Date.now() / 1000, snapshots: state.snapshots }),
+        // Five times a second: prices and order books. Every five seconds: the whole dashboard.
+        onLive: (frame) => send({ type: 'live', ...frame }),
+        onFrame: (state) => {
+          if (n++ % 5 === 0) send({ type: 'view', view: publicView(state, store) });
+        },
       })
         .then((result) => send({ type: 'end', ...result }))
         .catch((e) => send({ type: 'end', ok: false, error: String((e as Error)?.message || e) }))

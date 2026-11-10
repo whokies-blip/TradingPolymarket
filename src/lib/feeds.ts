@@ -163,6 +163,18 @@ export class BookFeed {
     return out.sort((x, y) => x.price - y.price);
   }
 
+  /** Bid levels, best (highest) first. */
+  bids(token: string): Level[] {
+    const b = this.books.get(token);
+    if (!b) return [];
+    const out: Level[] = [];
+    for (const [p, size] of b.bids) {
+      const price = Number(p);
+      if (size > 0 && price > 0 && price < 1) out.push({ price, size });
+    }
+    return out.sort((x, y) => y.price - x.price);
+  }
+
   best(token: string): { ask: number | null; bid: number | null } {
     const b = this.books.get(token);
     if (!b) return { ask: null, bid: null };
