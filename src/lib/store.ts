@@ -94,24 +94,29 @@ function blob(): Store {
 
 function file(dir: string, kind: 'file' | 'tmp'): Store {
   const p = path.join(dir, 'state.json');
+  // The version is the file's own modification stamp, so a write by the dashboard is always noticed.
+  const version = async () => {
+    const st = await fs.stat(p);
+    return `${st.mtimeMs}:${st.size}`;
+  };
   return {
     kind,
     durable: kind === 'file',
     async read() {
       try {
-        const state = JSON.parse(await fs.readFile(p, 'utf8')) as State;
-        return { state, etag: String(state.updatedAt) + ':' + state.tickCount + ':' + (state.lock?.id ?? '') };
+        const etag = await version();
+        return { state: JSON.parse(await fs.readFile(p, 'utf8')) as State, etag };
       } catch {
         return { state: null, etag: null };
       }
     },
     async write(state, etag) {
-      const cur = await this.read();
-      if (cur.etag !== etag) throw new ConflictError('state changed');
+      const current = await version().catch(() => null);
+      if (current !== etag) throw new ConflictError('state changed');
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(p + '.tmp', JSON.stringify(state));
       await fs.rename(p + '.tmp', p);
-      return String(state.updatedAt) + ':' + state.tickCount + ':' + (state.lock?.id ?? '');
+      return version();
     },
   };
 }

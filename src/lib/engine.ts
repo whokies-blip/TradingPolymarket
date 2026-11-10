@@ -335,7 +335,7 @@ export function improve(state: State, cfg: Config, now = nowSec()) {
  * book in memory, a decision every 200 ms. Paper orders are checked against the book half a second
  * later (the time a real order needs to arrive); real orders are sent immediately.
  */
-async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number): Promise<number> {
+async function runStream(state: State, cfg: Config, persist: () => Promise<void>, deadlineMs: number, signal?: AbortSignal): Promise<number> {
   const series = Object.fromEntries(await Promise.all(ASSETS.map(async (a) => [a, await getSeries(a)] as const))) as Record<Asset, Series>;
   if (ASSETS.some((a) => series[a].source !== 'binance')) throw new Error('flux de prix principal indisponible');
   const spot = new SpotFeed();
@@ -424,7 +424,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   };
 
   try {
-    while (Date.now() < deadlineMs) {
+    while (Date.now() < deadlineMs && !signal?.aborted) {
       const now = nowSec();
       const start = windowStartOf(now);
       if (spot.closed) throw new Error('flux de prix interrompu');
@@ -521,7 +521,17 @@ export interface TickResult {
   store: Store['kind'];
 }
 
-export async function runTick(opts: { loopSeconds?: number } = {}): Promise<TickResult> {
+export interface TickOptions {
+  loopSeconds?: number;
+  /** Stops the run cleanly (state saved, lock released) as soon as possible. */
+  signal?: AbortSignal;
+  /** If the live feeds fail, return instead of polling for the rest of the run (the caller retries). */
+  noFallback?: boolean;
+  /** Called after each save, e.g. to print progress. */
+  onSave?: (state: State) => void;
+}
+
+export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
   const cfg = config();
   const store = getStore();
   const began = Date.now();
@@ -544,6 +554,7 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
       applyControl(state!, cfg, fresh.state.control);
       etag = await store.write(state!, fresh.etag);
     }
+    opts.onSave?.(state!);
   };
   // Saves never overlap: each waits for the previous one.
   let queue: Promise<void> = Promise.resolve();
@@ -576,15 +587,16 @@ export async function runTick(opts: { loopSeconds?: number } = {}): Promise<Tick
     let streamed = false;
     if (cfg.realtime && loopMs >= 20000 && typeof WebSocket !== 'undefined') {
       try {
-        passes = await runStream(state, cfg, persist, began + loopMs);
+        passes = await runStream(state, cfg, persist, began + loopMs, opts.signal);
         streamed = true;
         mode = 'realtime';
       } catch (e) {
-        log(state, 'warn', `Temps réel indisponible (${String((e as Error)?.message || e).slice(0, 100)}) : repli sur l’interrogation périodique.`);
+        log(state, 'warn', `Temps réel indisponible (${String((e as Error)?.message || e).slice(0, 100)})${opts.noFallback ? '' : ' : repli sur l’interrogation périodique'}.`);
+        if (opts.noFallback) streamed = true;
       }
     }
     let lastSave = Date.now();
-    while (!streamed) {
+    while (!streamed && !opts.signal?.aborted) {
       const t = Date.now();
       await pass(state, cfg, persist);
       passes++;

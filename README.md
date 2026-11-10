@@ -4,6 +4,19 @@ Système de trading automatisé pour les marchés **« Bitcoin / Ethereum Up or 
 
 > **Avertissement.** Rien ne garantit un gain, et les données disponibles disent plutôt le contraire : voir « Ce que montrent les données ». N'activez la Production qu'avec de l'argent que vous pouvez perdre, et seulement si Polymarket est autorisé là où vous vivez.
 
+## Lancer sur votre Mac (recommandé)
+
+Un ordinateur allumé fait tourner le moteur temps réel en continu, sans les limites de Vercel.
+
+1. Installer [Node.js](https://nodejs.org) (version 22 ou plus récente).
+2. Récupérer le code, puis double-cliquer sur **`start-mac.command`** dans le dossier (ou lancer `npm install` puis `npm run local` dans un terminal).
+3. Le tableau de bord s'ouvre sur http://localhost:3000. Le terminal affiche l'état toutes les 30 secondes et chaque événement (trade, nouveau champion, problème).
+4. `Ctrl+C` arrête proprement. Tout l'historique est conservé dans `.data/state.json` et repris au prochain lancement.
+
+`start-mac.command` empêche la mise en veille tant que le moteur tourne ; gardez le Mac branché et le capot ouvert. Options : `PORT=4000 npm run local` (autre port), `npm run local -- --no-dashboard` (moteur seul).
+
+Pour la Production en local, créer un fichier `.env.local` (jamais envoyé sur GitHub) avec `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, relancer, puis armer depuis l'onglet Production.
+
 ## Ce que montrent les données
 
 Tests menés sur 1 152 marchés BTC réels (4 jours, ~1 500 transactions par marché, prix spot à la seconde) :
@@ -64,8 +77,8 @@ Pour la Production, ajouter `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLY
 
 ```bash
 npm install
-npm run dev          # tableau de bord sur http://localhost:3000
-curl "localhost:3000/api/cron/tick?once=1"   # un passage du moteur
+npm run local        # moteur temps réel + tableau de bord
+npm run dev          # tableau de bord seul
 npm test
 ```
 
