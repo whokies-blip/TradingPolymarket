@@ -37,7 +37,10 @@ Conditions de la Production : `LIVE_TRADING=true`, portefeuille configuré, rég
 1. Importer le dépôt dans Vercel (Next.js détecté automatiquement).
 2. Connecter un stockage au projet : **Vercel Blob** (privé) ou **Upstash Redis**. Sans stockage, l'historique n'est pas conservé.
 3. Définir `CRON_SECRET` et `ADMIN_TOKEN` (voir `.env.example` pour toutes les variables).
-4. Le cron à la minute (`vercel.json`) nécessite un forfait **Pro**. Sur Hobby, appelez `/api/cron/tick` chaque minute depuis un service externe avec l'en-tête `Authorization: Bearer $CRON_SECRET`.
+4. **Déclenchement du moteur** — le moteur doit être appelé en continu :
+   - **Vercel Pro** : remplacer le `schedule` de `vercel.json` par `* * * * *` (cron à la minute, chaque appel surveille ~50 s).
+   - **Vercel Hobby** (un seul cron par jour autorisé) : le workflow `.github/workflows/tick.yml` appelle le moteur toutes les 15 s. Il s'active une fois présent sur la branche par défaut, avec la variable de dépôt `TICK_URL` (ex. `https://tradingpolymarket.vercel.app`) et le secret `CRON_SECRET`. Les crons GitHub peuvent prendre du retard ; pour de l'argent réel, préférez Vercel Pro.
+5. **Quotas** — le moteur écrit son état à chaque appel. Le quota gratuit de Vercel Blob (Hobby) est trop faible pour un usage continu : utilisez Upstash Redis (offre gratuite suffisante) ou Vercel Pro.
 
 Pour la Production, ajouter `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, puis armer depuis l'onglet Production.
 
