@@ -19,19 +19,32 @@ En cas de message d'erreur de connexion (par exemple « HTTP 403 » ou « injoig
 
 Pour la Production en local, créer un fichier `.env.local` (jamais envoyé sur GitHub) avec `LIVE_TRADING=true`, `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS` et `POLYMARKET_SIGNATURE_TYPE`, relancer, puis armer depuis l'onglet Production.
 
-## Ce que montrent les données
+## La stratégie : le retard d'ETH sur BTC
 
-Tests menés sur 1 152 marchés BTC réels (4 jours, ~1 500 transactions par marché, prix spot à la seconde) :
+Le système ne trade **que l'ETH**, et seulement quand deux conditions sont réunies au même instant :
 
-- **La vitesse décide de tout.** En réagissant en ~0,5 s aux gros écarts entre la juste valeur et le prix du marché (≥ 10 ¢ après frais), la simulation donne **+3,6 ¢ par part** avec une hypothèse d'exécution prudente (t = 2,1) et +6,9 ¢ avec une hypothèse optimiste (t = 4,6). À 1,5 s de retard il ne reste presque rien ; à 2,5 s et au-delà, on perd.
-- **Les petits écarts perdent toujours** : en dessous de ~7 ¢, les frais (7 % × p(1−p)) et les robots plus rapides mangent tout. Un achat « au hasard » coûte environ 3 ¢ par part.
-- **Rien d'autre ne marche** : sur ~80 règles testées à 2-3 s de retard (favori, outsider, momentum, retour à la moyenne, flux d'ordres, modèle appris, ordres passifs), aucune n'a d'avantage positif fiable.
-- **Le marché prévoit mieux que notre modèle dans la dernière minute** (il voit directement le flux Chainlink qui sert au règlement) : le moteur n'ouvre plus de position à ce moment-là.
-- La première version de ce système (un passage toutes les 10 s, champion désigné après 15 trades), rejouée sur ces 4 jours, couronnait une stratégie « chanceuse » 89 % du temps et perdait 45 % du capital démo.
+1. **Le BTC vient de pousser** : sa probabilité de finir en hausse a bougé d'au moins quelques points en 10 à 20 secondes.
+2. **L'ETH est en retard** : son prix sur Polymarket est inférieur à sa propre juste valeur, dans le sens de la poussée, d'au moins quelques cents après frais.
 
-Ces chiffres viennent de 4 jours seulement et d'une exécution simulée : c'est une piste sérieuse, pas une preuve. Le mode Démo temps réel sert à la confirmer ou à l'infirmer, en quelques jours de fonctionnement continu.
+Les 24 stratégies en compétition sont 24 réglages de cette idée (ampleur du retard exigé × force de la poussée × durée d'observation).
 
-Pour rejouer le moteur (mode périodique) sur un historique : `npx tsx scripts/replay.ts <grille.json>` (une grille par marché : cotations exécutables toutes les 10 s et entrées du modèle).
+### Ce que montrent les données
+
+Tests sur 1 152 marchés ETH réels (4 jours, toutes les transactions, prix spot à la seconde) :
+
+| Règle testée | Gain par part, exécution optimiste | Exécution prudente |
+|---|---|---|
+| ETH en retard **et** BTC vient de pousser dans ce sens | +8 à +17 ¢ (t ≈ 6) | +1 à +13 ¢ (peu de trades, t < 2) |
+| ETH en retard, sans regarder le BTC | +3 à +10 ¢ | +1 à +8 ¢ |
+| Parier qu'ETH rattrape BTC, sans regarder le prix d'ETH | −2 à +1 ¢ | −6 à +1 ¢ |
+| Couverture « delta » : acheter ETH et le sens inverse sur BTC | −2 à −1 ¢ | −5 à +3 ¢ |
+
+- **La condition BTC améliore le signal à tous les seuils**, sur les deux moitiés de la période, et il tient encore avec 1,5 s de retard.
+- **La couverture delta ne marche pas** : la jambe BTC paie des frais et l'écart achat/vente sans rien rapporter.
+- **Sur les prix spot, le BTC n'entraîne pas l'ETH à l'échelle de la seconde** (corrélation décalée ≈ 0,11 dans les deux sens). Le retard exploitable est celui du *marché Polymarket d'ETH*, bien moins liquide que celui du BTC.
+- **Les volumes sont petits** : sur les carnets réels, une quarantaine de parts sont offertes au prix visé, pendant 1 à 6 secondes. C'est une stratégie de petites mises répétées.
+
+« Optimiste » suppose qu'on obtient le dernier prix vu ; « prudente » exige que ce prix se soit encore traité juste après. La vérité est entre les deux, et 4 jours ne font pas une preuve : c'est le mode Démo, qui s'exécute contre le vrai carnet une demi-seconde après la décision, qui tranchera.
 
 ## Fonctionnement
 
@@ -39,7 +52,7 @@ Le moteur (`/api/cron/tick`) travaille en **temps réel** par sessions de ~5 min
 
 1. **Flux en continu (WebSocket)** — prix Binance transaction par transaction, et carnet d'ordres Polymarket complet tenu à jour en mémoire (plusieurs centaines de mises à jour par seconde). Une décision toutes les 200 ms. Si les flux sont indisponibles, repli automatique sur une interrogation toutes les 10 s.
 2. **Juste valeur** — le marché paie « Hausse » si la moyenne des 60 dernières secondes dépasse la moyenne des 60 secondes précédant l'ouverture (vérifié à 98 % sur l'historique). Le modèle en déduit une probabilité, calibrée sur 43 776 mesures.
-3. **24 stratégies en compétition** (5 familles). Chacune « parie » fictivement 10 $, au plus une fois par marché. Aucune décision si les flux ont du retard, si l'écart achat/vente est large, ou dans la dernière minute.
+3. **24 réglages du « retard d'ETH »**. Chacun « parie » fictivement 10 $, au plus une fois par marché. Aucune décision si les flux ont du retard, si l'écart achat/vente est large, ou dans la dernière minute. Le BTC est observé en permanence mais jamais tradé.
 4. **Exécution réaliste** — un ordre fictif n'est compté que si le prix est encore dans le carnet une demi-seconde plus tard, le temps qu'un vrai ordre arrive. Sans cela, des stratégies perdantes paraissent rentables.
 5. **Règlement** sur le résultat officiel publié par Polymarket.
 

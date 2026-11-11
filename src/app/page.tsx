@@ -117,6 +117,14 @@ function LiveMarket({ asset, a, start, now, hist, dir }: { asset: 'btc' | 'eth';
       <LiveLine points={hist} strike={a.strike} now={now} />
       <Meter label="Hausse selon le marché" value={a.mid} />
       <Meter label="Hausse selon le modèle" value={a.qFair} />
+      {asset === 'eth' && a.lead !== undefined && (
+        <div className="sub" style={{ marginTop: 8 }}>
+          Poussée du BTC sur 10 s : <b className={cls(a.lead ?? 0)}>{a.lead === null ? '—' : `${a.lead > 0 ? '+' : a.lead < 0 ? '−' : ''}${Math.abs(a.lead * 100).toFixed(1).replace('.', ',')} pts`}</b>
+          {a.lead !== null && Math.abs(a.lead) >= 0.02 && a.mid !== null && a.qFair !== null
+            ? <> · ETH {(a.lead > 0 ? a.qFair - a.mid : a.mid - a.qFair) > 0.03 ? <b>en retard de {Math.round(Math.abs(a.qFair - a.mid) * 100)}¢</b> : 'déjà à jour'}</>
+            : <> · pas de poussée nette</>}
+        </div>
+      )}
       <div className="book">
         <div className="book-title"><span>Carnet d’ordres Polymarket — « Hausse »</span><span>{a.bookAgeMs === null ? 'connexion…' : `mis à jour il y a ${a.bookAgeMs} ms`}</span></div>
         {a.asks.length === 0 && a.bids.length === 0 ? <div className="muted">Carnet vide (marché en cours de clôture ou d’ouverture).</div> : <>
@@ -356,7 +364,7 @@ export default function Page() {
       <div className="row between">
         <div>
           <h1>Polymarket 5 min — BTC &amp; ETH</h1>
-          <div className="sub">Trading automatisé auto-améliorant · génération {v.generation} · {v.settledWindows} marchés analysés</div>
+          <div className="sub">Stratégie : retard d’ETH sur BTC · génération {v.generation} · {v.settledWindows} marchés analysés</div>
         </div>
         <div className="row">
           <span className={`badge ${engine === 'live' ? 'good' : stale ? 'bad' : 'good'}`}>{engine === 'live' ? 'Moteur actif · temps réel' : stale ? `Moteur inactif depuis ${Math.round((clock - v.updatedAt) / 60)} min` : `Moteur actif · ${time(v.updatedAt)}`}</span>
@@ -473,6 +481,21 @@ export default function Page() {
       </section>
 
       <section className="card">
+        <h2>Derniers ordres simulés</h2>
+        {v.tape.length === 0 ? <p className="muted">Aucun pour l’instant : le moteur attend une poussée du BTC pendant qu’ETH est en retard.</p> : (
+          <div className="tablewrap"><table>
+            <thead><tr><th>Heure</th><th>Stratégie</th><th>Pari</th><th className="num">Coût par part</th><th className="num">Chance estimée</th><th className="num">Poussée du BTC</th><th>Résultat</th></tr></thead>
+            <tbody>{v.tape.map((e, i) => (
+              <tr key={`${e.key}${e.sid}${i}`}>
+                <td>{time(e.t)}</td><td>{e.sid}</td><td>{e.asset.toUpperCase()} {SIDE[e.side]}</td><td className="num">{(e.cost * 100).toFixed(1)}¢</td><td className="num">{Math.round(e.q * 100)} %</td>
+                <td className="num">{e.lead === null ? '—' : `${e.lead > 0 ? '+' : '−'}${Math.abs(e.lead * 100).toFixed(1)} pts`}</td>
+                <td><span className={`badge ${e.result === 'won' ? 'good' : e.result === 'lost' ? 'bad' : e.result === 'void' ? '' : 'info'}`}>{e.result === 'won' ? `Gagné +${((1 - e.cost) * 100).toFixed(0)}¢` : e.result === 'lost' ? `Perdu −${(e.cost * 100).toFixed(0)}¢` : e.result === 'void' ? 'Annulé' : 'En attente du résultat'}</span></td>
+              </tr>))}</tbody>
+          </table></div>
+        )}
+      </section>
+
+      <section className="card">
         <div className="row between"><h2>Stratégies en compétition</h2><span className="sub">prochaine sélection dans {v.nextEvolveIn} marchés</span></div>
         <div className="banner" style={{ marginTop: 0, marginBottom: 10, background: champion ? 'var(--good-bg)' : 'var(--accent-bg)', color: 'var(--text)' }}>
           {champion
@@ -481,7 +504,7 @@ export default function Page() {
               ? <>Aucun avantage prouvé pour l’instant. Meilleur candidat : <b>{bestCandidate.id}</b>, {centsSigned(bestCandidate.edge)} ± {((bestCandidate.se ?? 0) * 100).toFixed(1)}¢ par part sur {bestCandidate.n} trades (t = {bestCandidate.tstat?.toFixed(1)}). Il faut t ≥ {v.settings.championZ} sur au moins {v.settings.championMinTrades} trades.</>
               : <>Aucun trade simulé pour l’instant. Une stratégie devient champion avec t ≥ {v.settings.championZ} sur au moins {v.settings.championMinTrades} trades.</>}
         </div>
-        <p className="sub">Chaque stratégie parie fictivement 10 $. L’ordre n’est compté que si le prix est encore disponible une demi-seconde plus tard dans le carnet, le temps qu’un vrai ordre arrive. « Gain par part » : ce que rapporte en moyenne une part achetée, frais déduits ; il faut qu’il soit positif de façon fiable (t élevé) pour gagner de l’argent.</p>
+        <p className="sub">Une seule idée, en 24 réglages : acheter ETH quand son prix Polymarket est en retard sur sa juste valeur <b>et</b> que le BTC vient de pousser dans le même sens. Aucun trade sur BTC. Chaque stratégie parie fictivement 10 $. L’ordre n’est compté que si le prix est encore disponible une demi-seconde plus tard dans le carnet, le temps qu’un vrai ordre arrive. « Gain par part » : ce que rapporte en moyenne une part achetée, frais déduits ; il faut qu’il soit positif de façon fiable (t élevé) pour gagner de l’argent.</p>
         <div className="tablewrap">
           <table>
             <thead><tr><th>Stratégie</th><th>Type</th><th>Réglages</th><th className="num">Trades</th><th className="num">Ordres exécutés</th><th className="num">Gagnés</th><th className="num">Gain par part</th><th className="num">Récent</th><th className="num">Par dollar misé</th><th className="num">Fiabilité (t)</th></tr></thead>

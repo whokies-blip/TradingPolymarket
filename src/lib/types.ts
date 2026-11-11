@@ -1,6 +1,6 @@
 export type Asset = 'btc' | 'eth';
 export type Side = 'up' | 'down';
-export type Family = 'fair' | 'learned' | 'momentum' | 'reversion' | 'follow';
+export type Family = 'lag' | 'fair' | 'learned';
 export type Mode = 'demo' | 'live';
 
 /** Tunable parameters of one strategy. Evolution mutates these. */
@@ -16,10 +16,10 @@ export interface Genes {
   /** Only buy a side whose ask is inside this band. */
   minPrice: number;
   maxPrice: number;
-  /** Strength of the directional tilt (momentum / reversion / follow). */
-  k: number;
-  /** Lookback in seconds for momentum / reversion. */
-  lookback: number;
+  /** "Lag" strategies: how hard BTC must have pushed (change of its win probability)… */
+  lead: number;
+  /** …and over how many seconds. */
+  leadWindow: number;
 }
 
 export interface Stats {
@@ -54,6 +54,19 @@ export interface ShadowTrade {
   cost: number;
   q: number;
   elapsed: number;
+}
+
+/** One paper order that filled, shown on the dashboard as it happens. */
+export interface TapeEntry {
+  t: number;
+  key: string;
+  sid: string;
+  asset: Asset;
+  side: Side;
+  cost: number;
+  q: number;
+  lead: number | null;
+  result?: 'won' | 'lost' | 'void';
 }
 
 export interface Trade {
@@ -165,7 +178,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 2;
+  version: 3;
   createdAt: number;
   updatedAt: number;
   tickCount: number;
@@ -185,6 +198,8 @@ export interface State {
   gate: GateCheck[];
   geo?: { t: number; blocked: boolean; country: string };
   log: LogEntry[];
+  /** Latest filled paper orders of all strategies, newest first. */
+  tape: TapeEntry[];
   recent: { key: string; asset: Asset; start: number; outcome: Side | 'void'; shadows: number }[];
 }
 
@@ -201,6 +216,8 @@ export interface LiveAsset {
   bids: [number, number][];
   /** Milliseconds since the last order-book update was received. */
   bookAgeMs: number | null;
+  /** ETH only: BTC's push over the last 10 seconds, in probability points (the trading trigger). */
+  lead?: number | null;
 }
 
 export interface LiveFrame {

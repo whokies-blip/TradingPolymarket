@@ -12,8 +12,9 @@ export interface Features {
   z: number;
   mom60: number;
   mom300: number;
-  mom900: number;
   flow: number;
+  /** ETH only: change of BTC's win probability over the last N seconds, keyed by N. */
+  lead?: Record<number, number>;
 }
 
 /**
@@ -22,8 +23,8 @@ export interface Features {
  *  - τ > 60: the final TWAP is spot plus noise of variance σ²(τ − 60 + 60/3)
  *  - τ ≤ 60: part of the average is already known; only the rest is uncertain.
  */
-export function computeFeatures(s: Series, windowStart: number, strike: number, now: number): Features | null {
-  const spot = s.last.c;
+export function computeFeatures(s: Series, windowStart: number, strike: number, now: number, spotOverride?: number): Features | null {
+  const spot = spotOverride ?? s.last.c;
   const sigma = s.sigma;
   if (!(sigma > 0) || !(spot > 0) || !(strike > 0)) return null;
   const elapsed = now - windowStart;
@@ -43,7 +44,7 @@ export function computeFeatures(s: Series, windowStart: number, strike: number, 
     const p = priceAt(s, now - sec);
     return p ? clamp(Math.log(spot / p) / (sigma * Math.sqrt(sec)), -4, 4) : 0;
   };
-  return { elapsed, spot, strike, sigma, z, mom60: mom(60), mom300: mom(300), mom900: mom(900), flow: flowImbalance(s, now, 60) };
+  return { elapsed, spot, strike, sigma, z, mom60: mom(60), mom300: mom(300), flow: flowImbalance(s, now, 60) };
 }
 
 /**
@@ -51,6 +52,22 @@ export function computeFeatures(s: Series, windowStart: number, strike: number, 
  * but over-confident in the tails (says 99.8%, happens 98.7%), hence the 1% floor on each side.
  */
 export const fairProb = (z: number, volMult = 1) => 0.01 + 0.98 * phi(z / volMult);
+
+/**
+ * BTC's push: how much BTC's own win probability changed over the last N seconds because its price
+ * moved (time is held fixed, so only the price move counts). Positive = BTC pushed up.
+ */
+export function leadOf(btc: Series, windowStart: number, strike: number, now: number, windows: number[]): Record<number, number> | undefined {
+  const current = computeFeatures(btc, windowStart, strike, now);
+  if (!current) return undefined;
+  const out: Record<number, number> = {};
+  for (const w of windows) {
+    const then = priceAt(btc, now - w);
+    const past = then ? computeFeatures(btc, windowStart, strike, now, then) : null;
+    if (past) out[w] = fairProb(current.z) - fairProb(past.z);
+  }
+  return out;
+}
 
 export const N_FEATURES = 8;
 

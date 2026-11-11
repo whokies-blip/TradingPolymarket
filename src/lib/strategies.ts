@@ -3,25 +3,24 @@ import { fairProb, type Features } from './model';
 import { feePerShare } from './polymarket';
 import type { Family, Genes, Side, Stats, Strategy } from './types';
 
-export const FAMILIES: Family[] = ['fair', 'learned', 'momentum', 'reversion', 'follow'];
-
 export const FAMILY_LABEL: Record<Family, string> = {
+  lag: 'Retard d’ETH sur BTC',
   fair: 'Juste valeur',
   learned: 'Modèle appris',
-  momentum: 'Momentum',
-  reversion: 'Retour à la moyenne',
-  follow: 'Suivi du favori',
 };
 
+/** How far back (seconds) the engine measures BTC's push. A strategy uses the nearest one. */
+export const LEAD_WINDOWS = [5, 10, 20, 40];
+
 const BOUNDS: Record<Exclude<keyof Genes, 'family'>, [number, number]> = {
-  minEdge: [0.01, 0.25],
+  minEdge: [0.02, 0.25],
   minElapsed: [0, 200],
   maxElapsed: [30, 240],
-  volMult: [0.6, 1.8],
-  minPrice: [0.03, 0.9],
+  volMult: [0.7, 1.6],
+  minPrice: [0.03, 0.5],
   maxPrice: [0.5, 0.97],
-  k: [0.01, 0.15],
-  lookback: [30, 900],
+  lead: [0.01, 0.15],
+  leadWindow: [5, 40],
 };
 
 export const emptyStats = (): Stats => ({ n: 0, wins: 0, signals: 0, sum: 0, sumSq: 0, sumCost: 0, ewN: 0, ew: 0 });
@@ -33,45 +32,35 @@ function normalise(g: Genes): Genes {
   }
   out.minElapsed = Math.round(out.minElapsed);
   out.maxElapsed = Math.round(Math.max(out.maxElapsed, out.minElapsed + 30));
-  out.lookback = Math.round(out.lookback);
-  out.maxPrice = Math.max(out.maxPrice, Math.min(0.97, out.minPrice + 0.05));
+  // Snap to a window the engine actually measures.
+  out.leadWindow = LEAD_WINDOWS.reduce((best, w) => (Math.abs(w - out.leadWindow) < Math.abs(best - out.leadWindow) ? w : best));
   return out;
 }
 
-const base = (family: Family, over: Partial<Genes> = {}): Genes =>
-  normalise({ family, minEdge: 0.05, minElapsed: 20, maxElapsed: 235, volMult: 1, minPrice: 0.08, maxPrice: 0.92, k: 0.05, lookback: 300, ...over });
+export const genome = (family: Family, over: Partial<Genes> = {}): Genes =>
+  normalise({ family, minEdge: 0.07, minElapsed: 10, maxElapsed: 235, volMult: 1, minPrice: 0.05, maxPrice: 0.95, lead: 0.03, leadWindow: 10, ...over });
 
 /**
- * The starting line-up. Weighted by what 1,152 replayed markets showed: reacting within a second,
- * fair-value disagreements of 10¢ or more were profitable (+3.6¢ to +6.9¢ per share) while smaller
- * ones lost to fees and faster traders, so fair-value variants demand a large edge. The learned
- * model (which starts from the market's own price) gets as many variants; the rest are long shots.
+ * The starting line-up: 24 variants of one idea, "ETH is late on BTC".
+ *
+ * Measured on 1,152 real ETH markets: buying ETH when its Polymarket price is below its own fair
+ * value AND BTC has just pushed the same way earned +8¢ to +17¢ per share at prices last seen
+ * (+1¢ to +13¢ assuming the price must survive a moment), and beat "ETH alone" at every threshold.
+ * What did NOT work: hedging with the opposite bet on BTC (−1¢ to −5¢, the hedge only costs fees),
+ * and betting on ETH catching up with BTC regardless of ETH's own price (no edge).
  */
 export function seedGenomes(): Genes[] {
   const out: Genes[] = [];
-  for (const minEdge of [0.08, 0.11, 0.14, 0.18]) {
-    out.push(base('fair', { minEdge, minElapsed: 20, maxElapsed: 150 }));
-    out.push(base('fair', { minEdge, minElapsed: 100, maxElapsed: 235, volMult: 1.1 }));
-  }
-  for (const minEdge of [0.015, 0.025, 0.04, 0.06]) {
-    out.push(base('learned', { minEdge, minElapsed: 20, maxElapsed: 150 }));
-    out.push(base('learned', { minEdge, minElapsed: 100, maxElapsed: 235 }));
-  }
-  for (const [k, lookback] of [[0.05, 60], [0.06, 300], [0.08, 900]]) {
-    out.push(base('momentum', { k, lookback, minEdge: 0.02, minElapsed: 0, maxElapsed: 90, minPrice: 0.3, maxPrice: 0.7 }));
-  }
-  for (const [k, lookback] of [[0.06, 300], [0.08, 900]]) {
-    out.push(base('reversion', { k, lookback, minEdge: 0.02, minElapsed: 0, maxElapsed: 90, minPrice: 0.3, maxPrice: 0.7 }));
-  }
-  for (const [k, minPrice] of [[0.04, 0.6], [0.05, 0.75], [0.04, 0.85]]) {
-    out.push(base('follow', { k, minPrice, maxPrice: 0.95, minEdge: 0.01, minElapsed: 120, maxElapsed: 235 }));
+  for (const minEdge of [0.04, 0.07, 0.1, 0.14]) {
+    for (const lead of [0.02, 0.04, 0.07]) {
+      for (const leadWindow of [10, 20]) out.push(genome('lag', { minEdge, lead, leadWindow }));
+    }
   }
   return out;
 }
 
 export function randomGenome(rand: () => number): Genes {
-  const family = FAMILIES[Math.floor(rand() * FAMILIES.length)];
-  const g = base(family);
+  const g = genome('lag');
   for (const key of Object.keys(BOUNDS) as (keyof typeof BOUNDS)[]) {
     const [lo, hi] = BOUNDS[key];
     g[key] = lo + rand() * (hi - lo);
@@ -107,38 +96,30 @@ export interface Signal {
   ask: number;
   /** q − (ask + fee): expected profit per share. */
   edge: number;
+  /** BTC's push that triggered the trade, in probability points (lag strategies only). */
+  lead?: number;
 }
 
 /** A strategy's probability that the window ends Up. */
-export function probUp(g: Genes, f: Features, mid: number, qModel: number | null): number | null {
-  switch (g.family) {
-    case 'fair':
-      return fairProb(f.z, g.volMult);
-    case 'learned':
-      return qModel;
-    case 'momentum':
-    case 'reversion': {
-      const m = g.lookback <= 120 ? f.mom60 : g.lookback <= 600 ? f.mom300 : f.mom900;
-      const tilt = g.k * Math.tanh(m) * (g.family === 'momentum' ? 1 : -1);
-      return clamp(mid + tilt, 0.01, 0.99);
-    }
-    case 'follow':
-      // Bets that favourites are under-priced (favourite/long-shot bias).
-      return clamp(mid + g.k * Math.sign(mid - 0.5), 0.01, 0.99);
-  }
+export function probUp(g: Genes, f: Features, qModel: number | null): number | null {
+  return g.family === 'learned' ? qModel : fairProb(f.z, g.volMult);
 }
 
 export function evaluate(g: Genes, f: Features, quote: Quote, qModel: number | null): Signal | null {
   if (f.elapsed < g.minElapsed || f.elapsed > g.maxElapsed) return null;
-  const p = probUp(g, f, quote.mid, qModel);
+  // "ETH is late": only on ETH, only when BTC has just pushed, and only in the direction of the push.
+  const lead = g.family === 'lag' ? f.lead?.[g.leadWindow] : undefined;
+  if (g.family === 'lag' && (lead === undefined || Math.abs(lead) < g.lead)) return null;
+  const p = probUp(g, f, qModel);
   if (p === null) return null;
   let best: Signal | null = null;
   for (const side of ['up', 'down'] as Side[]) {
+    if (lead !== undefined && (side === 'up') !== lead > 0) continue;
     const ask = side === 'up' ? quote.askUp : quote.askDown;
     if (ask === null || ask < g.minPrice || ask > g.maxPrice) continue;
     const q = side === 'up' ? p : 1 - p;
     const edge = q - ask - feePerShare(ask, quote.feeRate, quote.feeExp);
-    if (edge >= g.minEdge && (!best || edge > best.edge)) best = { side, q, ask, edge };
+    if (edge >= g.minEdge && (!best || edge > best.edge)) best = { side, q, ask, edge, lead };
   }
   return best;
 }
@@ -245,15 +226,6 @@ export function evolve(pop: Strategy[], generation: number, windowCount: number,
 export function describe(g: Genes): string {
   const t = `${g.minElapsed}–${g.maxElapsed}s`;
   const e = `avantage ≥ ${(g.minEdge * 100).toFixed(1)}¢`;
-  switch (g.family) {
-    case 'fair':
-      return `${e}, ${t}, vol ×${g.volMult}`;
-    case 'learned':
-      return `${e}, ${t}`;
-    case 'momentum':
-    case 'reversion':
-      return `${e}, ${t}, biais ${(g.k * 100).toFixed(0)}¢ sur ${g.lookback}s`;
-    case 'follow':
-      return `${e}, ${t}, favori ≥ ${(g.minPrice * 100).toFixed(0)}¢, biais ${(g.k * 100).toFixed(0)}¢`;
-  }
+  if (g.family === 'lag') return `ETH sous-évalué d’au moins ${(g.minEdge * 100).toFixed(0)}¢ · BTC a poussé d’au moins ${(g.lead * 100).toFixed(0)} pts en ${g.leadWindow} s`;
+  return g.family === 'fair' ? `${e}, ${t}, vol ×${g.volMult}` : `${e}, ${t}`;
 }

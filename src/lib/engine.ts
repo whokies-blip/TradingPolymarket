@@ -1,12 +1,12 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy } from './live';
 import { mulberry32, round } from './math';
-import { computeFeatures, fairProb, featureVector, learn, newModel, predict, type Features } from './model';
+import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
 import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
 import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
-import { FAMILY_LABEL, emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
+import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
 import type { Account, Asset, GateCheck, LiveFrame, LogEntry, Side, State, Strategy, Trade, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
@@ -17,7 +17,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = seedGenomes().map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 2,
+    version: 3,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -34,13 +34,14 @@ export function initState(cfg: Config, now = nowSec()): State {
     snapshots: {},
     gate: [],
     log: [{ t: now, level: 'info', msg: `Système initialisé : ${strategies.length} stratégies en observation.` }],
+    tape: [],
     recent: [],
   };
 }
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 2) return state;
+  if (state && state.version === 3) return state;
   const fresh = initState(cfg);
   if (state?.control) fresh.control = { killSwitch: !!state.control.killSwitch, liveArmed: false };
   return fresh;
@@ -157,7 +158,10 @@ export function applyFills(state: State, cfg: Config, win: WindowRec, pending: P
     const cap = Math.min(0.99, sig.ask + cfg.slippage);
     const fill = simulateBuy(asks, cfg.shadowStake, win.feeRate, win.feeExp, cap);
     if (!fill) continue;
-    win.shadows.push({ sid: strat.id, side: sig.side, cost: round(fill.cost / fill.shares), q: round(sig.q), elapsed: Math.round(now - win.start) });
+    const cost = round(fill.cost / fill.shares);
+    win.shadows.push({ sid: strat.id, side: sig.side, cost, q: round(sig.q), elapsed: Math.round(now - win.start) });
+    state.tape.unshift({ t: now, key: win.key, sid: strat.id, asset: win.asset, side: sig.side, cost, q: round(sig.q), lead: sig.lead === undefined ? null : round(sig.lead) });
+    if (state.tape.length > 60) state.tape.length = 60;
     if (strat.id === state.championId && !state.control.killSwitch && !win.demoTradeId) openDemo(state, cfg, win, strat, sig, asks, cap, now);
   }
 }
@@ -309,6 +313,7 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   for (const acct of [state.demo, state.live]) {
     for (const t of acct.trades) if (t.windowStart === win.start && t.asset === win.asset) settleTrade(acct, t, outcome, now);
   }
+  for (const entry of state.tape) if (entry.key === win.key) entry.result = outcome === 'void' ? 'void' : entry.side === outcome ? 'won' : 'lost';
   state.recent.unshift({ key: win.key, asset: win.asset, start: win.start, outcome, shadows: win.shadows.length });
   if (state.recent.length > 60) state.recent.length = 60;
   state.settledWindows++;
@@ -399,6 +404,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   let evals = 0;
   let sentHistory = false;
 
+  let lead10: number | null = null;
   const evalAsset = (asset: Asset, now: number, start: number, feed: BookFeed) => {
     const win = state.windows[`${asset}-${start}`];
     const price = spot.last[asset];
@@ -412,6 +418,12 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
     }
     const f = computeFeatures(s, start, win.strike, now);
     if (!f) return;
+    // ETH is judged against BTC: how hard has BTC just pushed, and which way?
+    if (asset === 'eth') {
+      const btc = state.windows[`btc-${start}`];
+      if (btc?.strike !== undefined) f.lead = leadOf(series.btc, start, btc.strike, now, LEAD_WINDOWS);
+      lead10 = f.lead?.[10] ?? null;
+    }
     const up = feed.best(win.upToken);
     const down = feed.best(win.downToken);
     const mid = up.ask !== null && up.bid !== null ? (up.ask + up.bid) / 2 : up.ask !== null && down.ask !== null ? (up.ask + 1 - down.ask) / 2 : null;
@@ -498,7 +510,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           const depth = (levels: Level[]) => levels.slice(0, 8).map((l) => [l.price, Math.round(l.size)] as [number, number]);
           assets[a] = {
             spot: spot.last[a] ?? null, strike: w?.strike ?? null, mid: snap?.mid ?? null, qFair: snap?.qFair ?? null, qModel: snap?.qModel ?? null,
-            asks: shown && w ? depth(shown.asks(w.upToken)) : [], bids: shown && w ? depth(shown.bids(w.upToken)) : [], bookAgeMs: shown ? Date.now() - shown.lastMsg : null,
+            asks: shown && w ? depth(shown.asks(w.upToken)) : [], bids: shown && w ? depth(shown.bids(w.upToken)) : [], bookAgeMs: shown ? Date.now() - shown.lastMsg : null, lead: a === 'eth' ? lead10 : undefined,
           };
         }
         const frame: LiveFrame = { t: now, windowStart: start, assets };

@@ -6,7 +6,7 @@ import { mulberry32, phi } from '../src/lib/math';
 import { computeFeatures, fairProb, featureVector, learn, newModel, predict } from '../src/lib/model';
 import { feePerShare, simulateBuy } from '../src/lib/polymarket';
 import { strikeOf, twap, type Series } from '../src/lib/prices';
-import { emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes } from '../src/lib/strategies';
+import { emptyStats, evaluate, evolve, genome, pickChampion, record, score, seedGenomes } from '../src/lib/strategies';
 import type { Strategy, WindowRec } from '../src/lib/types';
 
 const flat = (start: number, n: number, price: (t: number) => number): Series => {
@@ -56,7 +56,7 @@ test('fair value: above strike → Up more likely, more so near the end', () => 
 test('a strategy only trades when the edge after fees clears its threshold', () => {
   const s = flat(1000, 600, (t) => (t <= 1300 ? 100 : 100.1));
   const f = computeFeatures(s, 1300, 100, 1400)!;
-  const g = seedGenomes()[0];
+  const g = genome('fair', { minEdge: 0.06, minElapsed: 20 });
   const q = fairProb(f.z, g.volMult);
   const cheap = evaluate(g, f, { askUp: q - 0.1, askDown: 1 - q + 0.11, mid: q - 0.105, feeRate: 0.07, feeExp: 1 }, null);
   assert.equal(cheap?.side, 'up');
@@ -101,6 +101,7 @@ test('paper orders only fill if the price is still there when the order arrives'
   const win: WindowRec = { key: 'btc-300', asset: 'btc', start: 300, slug: 's', upToken: 'u', downToken: 'd', feeRate: 0.07, feeExp: 1, tickSize: 0.01, minSize: 5, negRisk: false, strike: 100, shadows: [], obs: [] };
   const s = flat(1000, 600, (t) => (t <= 1300 ? 100 : 100.1));
   const f = computeFeatures(s, 1300, 100, 1400)!;
+  f.lead = { 5: 0.1, 10: 0.1, 20: 0.1, 40: 0.1 }; // BTC has just pushed up
   const q = fairProb(f.z);
   const quote = { askUp: q - 0.2, askDown: 1 - q + 0.21, mid: q - 0.205, feeRate: 0.07, feeExp: 1 };
   const pending = decide(state, cfg, win, f, quote, null);
@@ -116,16 +117,34 @@ test('paper orders only fill if the price is still there when the order arrives'
   assert.equal(decide(state, cfg, { ...win, shadows: [] }, { ...f, elapsed: 250 }, quote, null).length, 0);
 });
 
+test('lag strategies trade ETH only when BTC has just pushed the same way', () => {
+  const s = flat(1000, 600, (t) => (t <= 1300 ? 100 : 100.1));
+  const f = computeFeatures(s, 1300, 100, 1400)!;
+  const q = fairProb(f.z);
+  const cheapUp = { askUp: q - 0.15, askDown: 1 - q + 0.16, mid: q - 0.155, feeRate: 0.07, feeExp: 1 };
+  const g = genome('lag', { minEdge: 0.07, lead: 0.04, leadWindow: 10 });
+  const push = (x: number) => ({ ...f, lead: { 5: x, 10: x, 20: x, 40: x } });
+  assert.equal(evaluate(g, f, cheapUp, null), null); // no BTC information (e.g. the BTC market itself): never
+  assert.equal(evaluate(g, push(0.01), cheapUp, null), null); // BTC barely moved
+  assert.equal(evaluate(g, push(-0.08), cheapUp, null), null); // BTC pushed DOWN: do not buy Up, however cheap
+  const sig = evaluate(g, push(0.08), cheapUp, null);
+  assert.equal(sig?.side, 'up');
+  assert.ok(sig!.edge >= 0.07 && sig!.lead === 0.08);
+  // BTC pushed up but ETH Up is not cheap enough: no trade
+  assert.equal(evaluate(g, push(0.08), { ...cheapUp, askUp: q - 0.03 }, null), null);
+  assert.ok(seedGenomes().length === 24 && seedGenomes().every((x) => x.family === 'lag'));
+});
+
 test('online model learns a signal the market misses', () => {
   const m = newModel();
   const rand = mulberry32(7);
   for (let i = 0; i < 4000; i++) {
     const z = (rand() - 0.5) * 4;
     const up = rand() < phi(z) ? 1 : 0;
-    const f = { elapsed: 150, spot: 1, strike: 1, sigma: 1, z, mom60: 0, mom300: 0, mom900: 0, flow: 0 };
+    const f = { elapsed: 150, spot: 1, strike: 1, sigma: 1, z, mom60: 0, mom300: 0, flow: 0 };
     learn(m, [{ elapsed: 150, x: featureVector(f, 0.5), mid: 0.5, qFair: phi(z) }], up as 0 | 1, 0.05);
   }
-  const f = { elapsed: 150, spot: 1, strike: 1, sigma: 1, z: 1.5, mom60: 0, mom300: 0, mom900: 0, flow: 0 };
+  const f = { elapsed: 150, spot: 1, strike: 1, sigma: 1, z: 1.5, mom60: 0, mom300: 0, flow: 0 };
   assert.ok(predict(m, featureVector(f, 0.5)) > 0.75);
   assert.ok(m.llModel < m.llMarket);
 });
