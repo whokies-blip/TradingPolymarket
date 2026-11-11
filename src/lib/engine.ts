@@ -161,7 +161,7 @@ export function applyFills(state: State, cfg: Config, win: WindowRec, pending: P
     const cost = round(fill.cost / fill.shares);
     win.shadows.push({ sid: strat.id, side: sig.side, cost, q: round(sig.q), elapsed: Math.round(now - win.start), t: now, shares: round(fill.shares, 2), bid0: sig.side === 'up' ? bidUp : bidDown });
     state.tape.unshift({ t: now, key: win.key, sid: strat.id, asset: win.asset, side: sig.side, cost, q: round(sig.q), lead: sig.lead === undefined ? null : round(sig.lead) });
-    if (state.tape.length > 60) state.tape.length = 60;
+    if (state.tape.length > 240) state.tape.length = 240;
     if (strat.id === state.championId && !state.control.killSwitch && !win.demoTradeId) openDemo(state, cfg, win, strat, sig, asks, cap, now);
   }
 }

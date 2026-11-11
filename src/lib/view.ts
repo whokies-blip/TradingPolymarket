@@ -39,7 +39,7 @@ export function publicView(state: State, store: Store) {
     snapshots: state.snapshots,
     gate: computeGate(state, cfg, now),
     log: state.log.slice(0, 60),
-    tape: (state.tape ?? []).slice(0, 30),
+    tape: (state.tape ?? []).slice(0, 240),
     recent: state.recent.slice(0, 40),
     settings: {
       liveTrading: cfg.liveTrading, liveConfigured: liveConfigured(cfg), liveStakeUsd: cfg.liveStakeUsd, liveMaxDailyLoss: cfg.liveMaxDailyLoss,

@@ -348,6 +348,21 @@ export default function Page() {
 
   const acct = v ? v[mode] : null;
   const champion = useMemo(() => v?.strategies.find((s) => s.champion) ?? null, [v]);
+  // Group the paper orders into signals: every setting that entered at the same instant, in the same direction.
+  const signals = useMemo(() => {
+    const groups = new Map<string, { id: string; t: number; side: 'up' | 'down'; lead: number | null; cost: number; n: number; outcomes: Map<string, { label: string; n: number; pnl: number; open: boolean }> }>();
+    for (const e of v?.tape ?? []) {
+      const id = `${e.key}|${e.side}|${Math.round(e.t)}`;
+      let g = groups.get(id);
+      if (!g) groups.set(id, (g = { id, t: e.t, side: e.side, lead: e.lead, cost: e.cost, n: 0, outcomes: new Map() }));
+      g.n++;
+      const label = !e.result ? 'position ouverte' : e.result === 'void' ? 'annulé' : `${RESULT[e.result].toLowerCase()} ${centsSigned(e.pnl)}`;
+      const o = g.outcomes.get(label) ?? { label, n: 0, pnl: e.pnl ?? 0, open: !e.result };
+      o.n++;
+      g.outcomes.set(label, o);
+    }
+    return [...groups.values()].map((g) => ({ ...g, outcomes: [...g.outcomes.values()] }));
+  }, [v]);
   const bestCandidate = useMemo(() => v?.strategies.filter((s) => s.n >= 5 && s.tstat !== null).sort((x, y) => (y.tstat ?? 0) - (x.tstat ?? 0))[0] ?? null, [v]);
   if (!v || !acct) return <main><h1>Polymarket 5 min</h1><p className="sub">{err || 'Chargement…'}</p></main>;
 
@@ -482,18 +497,24 @@ export default function Page() {
       </section>
 
       <section className="card">
-        <h2>Derniers ordres simulés</h2>
-        {v.tape.length === 0 ? <p className="muted">Aucun pour l’instant : le moteur attend une poussée du BTC pendant qu’ETH est en retard.</p> : (
+        <h2>Derniers signaux</h2>
+        {signals.length === 0 ? <p className="muted">Aucun pour l’instant : le moteur attend une poussée du BTC pendant qu’ETH est en retard.</p> : (<>
+          <p className="sub">Sur les {signals.length} derniers signaux : <b>{signals.filter((g) => g.side === 'up').length} à la hausse</b> et <b>{signals.filter((g) => g.side === 'down').length} à la baisse</b>. Le sens suit toujours la poussée du BTC : s’il pousse vers le haut, le système achète « Hausse » sur ETH ; vers le bas, il achète « Baisse ». Plusieurs réglages entrent souvent au même instant ; ils sont regroupés sur une ligne.</p>
           <div className="tablewrap"><table>
-            <thead><tr><th>Heure</th><th>Stratégie</th><th>Pari</th><th className="num">Coût par part</th><th className="num">Chance estimée</th><th className="num">Poussée du BTC</th><th>Résultat</th></tr></thead>
-            <tbody>{v.tape.map((e, i) => (
-              <tr key={`${e.key}${e.sid}${i}`}>
-                <td>{time(e.t)}</td><td>{e.sid}</td><td>{e.asset.toUpperCase()} {SIDE[e.side]}</td><td className="num">{(e.cost * 100).toFixed(1)}¢</td><td className="num">{Math.round(e.q * 100)} %</td>
-                <td className="num">{e.lead === null ? '—' : `${e.lead > 0 ? '+' : '−'}${Math.abs(e.lead * 100).toFixed(1)} pts`}</td>
-                <td><span className={`badge ${!e.result ? 'info' : e.result === 'void' ? '' : (e.pnl ?? 0) > 0 ? 'good' : 'bad'}`}>{!e.result ? 'Position ouverte' : e.result === 'void' ? 'Annulé' : `${RESULT[e.result]} ${centsSigned(e.pnl)}`}</span></td>
+            <thead><tr><th>Heure</th><th>Pari</th><th className="num">Poussée du BTC</th><th className="num">Coût par part</th><th className="num">Réglages entrés</th><th>Ce qu’ils sont devenus</th></tr></thead>
+            <tbody>{signals.slice(0, 20).map((g) => (
+              <tr key={g.id}>
+                <td>{time(g.t)}</td>
+                <td><b>ETH {SIDE[g.side]} {g.side === 'up' ? '▲' : '▼'}</b></td>
+                <td className="num">{g.lead === null ? '—' : `${g.lead > 0 ? '+' : '−'}${Math.abs(g.lead * 100).toFixed(1)} pts`}</td>
+                <td className="num">{(g.cost * 100).toFixed(1)}¢</td>
+                <td className="num">{g.n}</td>
+                <td>{g.outcomes.map((o) => (
+                  <span key={o.label} className={`badge ${o.open ? 'info' : o.pnl > 0 ? 'good' : o.pnl < 0 ? 'bad' : ''}`} style={{ marginRight: 6 }}>{o.n} × {o.label}</span>
+                ))}</td>
               </tr>))}</tbody>
           </table></div>
-        )}
+        </>)}
       </section>
 
       <section className="card">
