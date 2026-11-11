@@ -1,7 +1,7 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy, placeLiveSell } from './live';
 import { mulberry32, round } from './math';
-import { newMm, onTrade, quoteSizes, settleMm, type Quotes } from './mm';
+import { capSizes, newMm, onTrade, quoteSizes, settleMm, type Quotes } from './mm';
 import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
 import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, simulateSell, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
@@ -623,10 +623,11 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
               if (!w || !top || top.ask === null || top.bid === null || !open || !close || el < 10 || el > cfg.lastEntry) continue;
               if (top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
               const size = quoteSizes(open, close, cfg.mmSize);
+              const capped = capSizes(size, state.mm.books[w.key]?.net ?? 0, cfg.mmMaxStock);
               desk[a] = {
                 key: w.key, asset: a, candle: size.candle,
-                bid: { price: top.bid, left: size.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) },
-                ask: { price: top.ask, left: size.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) },
+                bid: { price: top.bid, left: capped.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) },
+                ask: { price: top.ask, left: capped.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) },
               };
             }
           }

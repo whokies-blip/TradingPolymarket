@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { config } from '../src/lib/config';
-import { newMm, onTrade, quoteSizes, settleMm, type Quotes } from '../src/lib/mm';
+import { capSizes, newMm, onTrade, quoteSizes, settleMm, type Quotes } from '../src/lib/mm';
 import type { WindowRec } from '../src/lib/types';
 
 const win: WindowRec = { key: 'btc-300', asset: 'btc', start: 300, slug: 's', upToken: 'u', downToken: 'd', feeRate: 0.07, feeExp: 1, tickSize: 0.01, minSize: 5, negRisk: false, shadows: [], obs: [] };
@@ -11,6 +11,14 @@ test('candle colour sets the sizes: green buys double, red sells double', () => 
   assert.deepEqual(quoteSizes(100, 101, 10), { candle: 'green', bid: 20, ask: 10 });
   assert.deepEqual(quoteSizes(100, 99, 10), { candle: 'red', bid: 10, ask: 20 });
   assert.deepEqual(quoteSizes(100, 100, 10), { candle: 'flat', bid: 10, ask: 10 });
+});
+
+test('inventory cap: at the cap the desk only quotes the side that reduces its stock', () => {
+  const green = { bid: 20, ask: 10 };
+  assert.deepEqual(capSizes(green, 0, 20), { bid: 20, ask: 10 });
+  assert.deepEqual(capSizes(green, 15, 20), { bid: 5, ask: 10 }); // room for 5 more Up only
+  assert.deepEqual(capSizes(green, 20, 20), { bid: 0, ask: 10 }); // full of Up: only Down is asked for
+  assert.deepEqual(capSizes({ bid: 10, ask: 20 }, -20, 20), { bid: 10, ask: 0 }); // full of Down
 });
 
 test('a resting order fills only when trades go through it or exhaust the queue ahead of it', () => {

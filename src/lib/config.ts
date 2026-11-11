@@ -63,6 +63,8 @@ export const config = () => ({
   // --- paper market making
   mmEnabled: bool('MM_ENABLED', true),
   mmSize: num('MM_SIZE', 10),
+  /** Most shares the desk may hold on one side of one market; beyond it, it only quotes the other side. */
+  mmMaxStock: num('MM_MAX_STOCK', 20),
   mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
   mmRebate: num('MM_REBATE', 0.2),
   // --- auth
