@@ -230,6 +230,9 @@ export interface LiveAsset {
   /** Order book of the "Up" outcome, best prices first: [price, shares]. */
   asks: [number, number][];
   bids: [number, number][];
+  /** Same for the "Down" outcome. */
+  asksDown: [number, number][];
+  bidsDown: [number, number][];
   /** Milliseconds since the last order-book update was received. */
   bookAgeMs: number | null;
   /** ETH only: BTC's push over the last 10 seconds, in probability points (the trading trigger). */

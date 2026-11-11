@@ -81,3 +81,7 @@ details summary { cursor: pointer; color: var(--text2); }
 .book-row span { position: relative; } .book-row span:last-child { text-align: right; }
 .book-row .side { color: var(--text2); }
 .book-spread { text-align: center; color: var(--text2); padding: 3px 0; border-top: 1px dashed var(--border); border-bottom: 1px dashed var(--border); margin: 3px 0 5px; }
+
+.books { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+.books .book { margin-top: 6px; }
+.books .book-row { grid-template-columns: 52px 1fr 64px; }

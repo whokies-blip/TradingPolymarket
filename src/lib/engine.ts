@@ -609,10 +609,11 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
         for (const a of ASSETS) {
           const w = state.windows[`${a}-${start}`];
           const snap = state.snapshots[a]?.windowStart === start ? state.snapshots[a] : undefined;
-          const depth = (levels: Level[]) => levels.slice(0, 8).map((l) => [l.price, Math.round(l.size)] as [number, number]);
+          const depth = (levels: Level[]) => levels.slice(0, 6).map((l) => [l.price, Math.round(l.size)] as [number, number]);
           assets[a] = {
             spot: spot.last[a] ?? null, strike: w?.strike ?? null, mid: snap?.mid ?? null, qFair: snap?.qFair ?? null, qModel: snap?.qModel ?? null,
-            asks: shown && w ? depth(shown.asks(w.upToken)) : [], bids: shown && w ? depth(shown.bids(w.upToken)) : [], bookAgeMs: shown ? Date.now() - shown.lastMsg : null, lead: a === 'eth' ? lead10 : undefined,
+            asks: shown && w ? depth(shown.asks(w.upToken)) : [], bids: shown && w ? depth(shown.bids(w.upToken)) : [],
+            asksDown: shown && w ? depth(shown.asks(w.downToken)) : [], bidsDown: shown && w ? depth(shown.bids(w.downToken)) : [], bookAgeMs: shown ? Date.now() - shown.lastMsg : null, lead: a === 'eth' ? lead10 : undefined,
           };
         }
         const frame: LiveFrame = { t: now, windowStart: start, assets };

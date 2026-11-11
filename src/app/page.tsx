@@ -97,13 +97,31 @@ function Meter({ label, value }: { label: string; value: number | null }) {
   );
 }
 
+/** One outcome's order book: sellers above (what you pay to buy), buyers below (what you get if you sell). */
+function Book({ title, asks, bids }: { title: string; asks: [number, number][]; bids: [number, number][] }) {
+  const maxSize = Math.max(1, ...asks.map((l) => l[1]), ...bids.map((l) => l[1]));
+  const spread = asks[0] && bids[0] ? asks[0][0] - bids[0][0] : null;
+  const shares = (n: number) => n.toLocaleString('fr-FR');
+  return (
+    <div className="book">
+      <div className="book-title"><span>{title}</span><span>{asks[0] ? `achat à ${tick(asks[0][0])}` : ''}</span></div>
+      {asks.length === 0 && bids.length === 0 ? <div className="muted">Carnet vide (ouverture ou clôture du marché).</div> : <>
+        {[...asks].reverse().map(([p, n]) => (
+          <div className="book-row ask" key={`a${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{tick(p)}</b></span><span className="side">à vendre</span><span>{shares(n)}</span></div>
+        ))}
+        <div className="book-spread">{spread === null ? 'un seul côté coté' : `écart ${tick(spread)}`}</div>
+        {bids.map(([p, n]) => (
+          <div className="book-row bid" key={`b${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{tick(p)}</b></span><span className="side">à acheter</span><span>{shares(n)}</span></div>
+        ))}
+      </>}
+    </div>
+  );
+}
+
 /** One market, live: spot price, the price to beat, both probabilities and the Polymarket order book. */
 function LiveMarket({ asset, a, start, now, hist, dir }: { asset: 'btc' | 'eth'; a: LiveAsset; start: number; now: number; hist: Hist; dir: number }) {
   const left = Math.max(0, start + 300 - now);
   const diff = a.spot !== null && a.strike !== null ? a.spot - a.strike : null;
-  const maxSize = Math.max(1, ...a.asks.map((l) => l[1]), ...a.bids.map((l) => l[1]));
-  const spread = a.asks[0] && a.bids[0] ? a.asks[0][0] - a.bids[0][0] : null;
-  const shares = (n: number) => n.toLocaleString('fr-FR');
   return (
     <div className="card">
       <div className="live-head">
@@ -126,17 +144,10 @@ function LiveMarket({ asset, a, start, now, hist, dir }: { asset: 'btc' | 'eth';
             : <> · pas de poussée nette</>}
         </div>
       )}
-      <div className="book">
-        <div className="book-title"><span>Carnet d’ordres Polymarket — « Hausse »</span><span>{a.bookAgeMs === null ? 'connexion…' : `mis à jour il y a ${a.bookAgeMs} ms`}</span></div>
-        {a.asks.length === 0 && a.bids.length === 0 ? <div className="muted">Carnet vide (marché en cours de clôture ou d’ouverture).</div> : <>
-          {[...a.asks].reverse().map(([p, n]) => (
-            <div className="book-row ask" key={`a${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{tick(p)}</b></span><span className="side">à vendre</span><span>{shares(n)} parts</span></div>
-          ))}
-          <div className="book-spread">{spread === null ? 'un seul côté coté' : `écart ${tick(spread)} entre le meilleur vendeur et le meilleur acheteur`}</div>
-          {a.bids.map(([p, n]) => (
-            <div className="book-row bid" key={`b${p}`}><i style={{ width: `${(n / maxSize) * 100}%` }} /><span><b>{tick(p)}</b></span><span className="side">à acheter</span><span>{shares(n)} parts</span></div>
-          ))}
-        </>}
+      <div className="sub" style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between' }}><b>Carnets d’ordres Polymarket</b><span>{a.bookAgeMs === null ? 'connexion…' : `mis à jour il y a ${a.bookAgeMs} ms`}</span></div>
+      <div className="books">
+        <Book title="Pari « Hausse » ▲" asks={a.asks} bids={a.bids} />
+        <Book title="Pari « Baisse » ▼" asks={a.asksDown ?? []} bids={a.bidsDown ?? []} />
       </div>
     </div>
   );
