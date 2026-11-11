@@ -1,10 +1,11 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy, placeLiveSell } from './live';
 import { mulberry32, round } from './math';
+import { newMm, onTrade, quoteSizes, settleMm, type Quotes } from './mm';
 import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
 import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, simulateSell, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
-import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
+import { blendSigma, getSeries, priceAt, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
 import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, exitsEarly, openGenomes, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
 import type { Account, Asset, ExitReason, GateCheck, LiveFrame, LogEntry, ShadowTrade, Side, State, Strategy, Trade, WindowRec } from './types';
@@ -17,7 +18,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = [...seedGenomes(), ...openGenomes()].map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 5,
+    version: 6,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -34,6 +35,7 @@ export function initState(cfg: Config, now = nowSec()): State {
     snapshots: {},
     gate: [],
     log: [{ t: now, level: 'info', msg: `Système initialisé : ${strategies.length} stratégies en observation.` }],
+    mm: newMm(),
     tape: [],
     recent: [],
   };
@@ -41,12 +43,18 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 5) return state;
+  if (state && state.version === 6) return state;
+  if (state && (state.version as number) === 5) {
+    state.mm = newMm(); // the market-making desk starts empty; everything else is kept
+    state.version = 6;
+    return state;
+  }
   if (state && (state.version as number) === 4) {
     // Add the "head start" strategies next to the existing ones, keeping everything learned so far.
     const now = nowSec();
     openGenomes().forEach((genes, i) => state.strategies.push({ id: `o-${i}`, gen: state.generation, genes, stats: emptyStats(), bornAt: now, bornWindow: state.settledWindows }));
-    state.version = 5;
+    state.mm = newMm();
+    state.version = 6;
     log(state, 'evolve', 'Nouvelle famille ajoutée : « départ en avance d’ETH » (6 réglages).', now);
     return state;
   }
@@ -393,6 +401,7 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   for (const acct of [state.demo, state.live]) {
     for (const t of acct.trades) if (t.windowStart === win.start && t.asset === win.asset) settleTrade(acct, t, outcome, now);
   }
+  settleMm(state.mm, win.key, outcome, now);
   for (const entry of state.tape) {
     if (entry.key !== win.key || entry.result) continue;
     entry.result = outcome === 'void' ? 'void' : entry.side === outcome ? 'won' : 'lost';
@@ -490,6 +499,9 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   let evals = 0;
   let sentHistory = false;
 
+  // Market-making desk: its resting quotes per asset, renewed at each candle close.
+  const desk: Partial<Record<Asset, Quotes>> = {};
+  let lastCandle = 0;
   let lead10: number | null = null;
   const evalAsset = (asset: Asset, now: number, start: number, feed: BookFeed) => {
     const win = state.windows[`${asset}-${start}`];
@@ -584,6 +596,40 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           const c = confirms.shift()!;
           if (c.win.start !== start || c.win.outcome) continue;
           applyFills(state, cfg, c.win, [c.p], feed.asks(c.win.upToken), feed.asks(c.win.downToken), nowSec(), feed.best(c.win.upToken).bid, feed.best(c.win.downToken).bid);
+        }
+        // Market making: first let the trades that just happened fill our resting quotes…
+        if (cfg.mmEnabled) {
+          for (const tr of feed.drainTrades()) {
+            for (const a of ASSETS) {
+              const q = desk[a];
+              const w = q ? state.windows[q.key] : undefined;
+              if (!q || !w || w.start !== start) continue;
+              if (tr.token === w.upToken) onTrade(state.mm, cfg, q, w, tr.price, tr.size, !tr.takerBuy, now);
+              // Buying Down from a taker is the same trade as selling Up at the complementary price.
+              else if (tr.token === w.downToken) onTrade(state.mm, cfg, q, w, 1 - tr.price, tr.size, tr.takerBuy, now);
+            }
+          }
+          // …then, at each candle close, cancel and re-quote both sides at the best prices.
+          const candle = Math.floor(now / cfg.mmSeconds);
+          if (candle !== lastCandle) {
+            lastCandle = candle;
+            for (const a of ASSETS) {
+              const w = state.windows[`${a}-${start}`];
+              const el = now - start;
+              const open = priceAt(series[a], now - cfg.mmSeconds);
+              const close = spot.last[a];
+              const top = w ? feed.best(w.upToken) : null;
+              desk[a] = undefined;
+              if (!w || !top || top.ask === null || top.bid === null || !open || !close || el < 10 || el > cfg.lastEntry) continue;
+              if (top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
+              const size = quoteSizes(open, close, cfg.mmSize);
+              desk[a] = {
+                key: w.key, asset: a, candle: size.candle,
+                bid: { price: top.bid, left: size.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) },
+                ask: { price: top.ask, left: size.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) },
+              };
+            }
+          }
         }
         // Open positions: is it time to take the gain, cut the loss, or give up waiting?
         for (const a of ASSETS) {

@@ -95,6 +95,8 @@ export class BookFeed {
   private ws: WebSocket | null = null;
   private ping: ReturnType<typeof setInterval> | null = null;
   private books = new Map<string, LocalBook>();
+  /** Trades reported by the exchange since the last `drainTrades`: token, price, size, taker's side. */
+  private prints: { token: string; price: number; size: number; takerBuy: boolean }[] = [];
   lastMsg = 0;
   closed = false;
 
@@ -135,6 +137,13 @@ export class BookFeed {
       b.ready = true;
       return;
     }
+    if (ev?.event_type === 'last_trade_price' && this.books.has(ev.asset_id)) {
+      const price = Number(ev.price);
+      const size = Number(ev.size);
+      if (price > 0 && size > 0) this.prints.push({ token: ev.asset_id, price, size, takerBuy: ev.side === 'BUY' });
+      if (this.prints.length > 5000) this.prints.splice(0, 2500);
+      return;
+    }
     if (Array.isArray(ev?.price_changes)) {
       for (const c of ev.price_changes) {
         const b = this.books.get(c.asset_id);
@@ -145,6 +154,20 @@ export class BookFeed {
         else side.delete(c.price);
       }
     }
+  }
+
+  drainTrades() {
+    const out = this.prints;
+    this.prints = [];
+    return out;
+  }
+
+  /** Shares resting at exactly this price on one side. */
+  sizeAt(token: string, side: 'bid' | 'ask', price: number): number {
+    const b = this.books.get(token);
+    if (!b) return 0;
+    for (const [p, size] of side === 'bid' ? b.bids : b.asks) if (Math.abs(Number(p) - price) < 1e-9) return size;
+    return 0;
   }
 
   ready(): boolean {

@@ -60,6 +60,11 @@ export const config = () => ({
   liveMinTrades: num('LIVE_MIN_TRADES', 150),
   liveMinTstat: num('LIVE_MIN_TSTAT', 3),
   liveMaxSlippage: num('LIVE_MAX_SLIPPAGE', 0.02),
+  // --- paper market making
+  mmEnabled: bool('MM_ENABLED', true),
+  mmSize: num('MM_SIZE', 10),
+  mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
+  mmRebate: num('MM_REBATE', 0.2),
   // --- auth
   cronSecret: process.env.CRON_SECRET || '',
   adminToken: process.env.ADMIN_TOKEN || '',

@@ -507,6 +507,27 @@ export default function Page() {
         <Trades trades={acct.trades} />
       </section>
 
+      {v.mm?.enabled && (
+        <section className="card">
+          <h2>Tenue de marché (simulation)</h2>
+          <p className="sub">Le système place en permanence un ordre d’achat et un ordre de vente de parts « Hausse » aux meilleurs prix du carnet, sur BTC et ETH, renouvelés toutes les {v.mm.seconds} secondes. Après une bougie verte il achète {2 * v.mm.size} parts et en vend {v.mm.size} ; après une bougie rouge, l’inverse. Un ordre n’est compté exécuté que si une vraie transaction le traverse, ou l’atteint après les ordres qui étaient devant lui. Aucun frais sur ces ordres ; {Math.round(v.mm.rebate * 100)} % des frais payés par la contrepartie alimentent le compte de récompenses.</p>
+          <div className="grid g4" style={{ marginTop: 10 }}>
+            <Tile label="Résultat du trading" value={signed(v.mm.pnl)} tone={cls(v.mm.pnl)} hint={`${v.mm.markets} marchés réglés`} />
+            <Tile label="Compte de récompenses (pUSD)" value={usd(v.mm.rewards)} tone="pos" hint={`${Math.round(v.mm.rebate * 100)} % des frais des contreparties`} />
+            <Tile label="Total" value={signed(v.mm.pnl + v.mm.rewards)} tone={cls(v.mm.pnl + v.mm.rewards)} hint="trading + récompenses" />
+            <Tile label="Ordres exécutés" value={String(v.mm.fills)} hint={`${usd(v.mm.volume, 0)} échangés · ${Math.round(v.mm.inventory)} parts en stock`} />
+          </div>
+          {v.mm.recent.length > 0 && (
+            <div className="tablewrap" style={{ marginTop: 10 }}><table>
+              <thead><tr><th>Heure</th><th>Marché</th><th>Bougie</th><th>Exécution</th><th className="num">Parts</th><th className="num">Prix</th><th className="num">Récompense</th></tr></thead>
+              <tbody>{v.mm.recent.map((f, i) => (
+                <tr key={i}><td>{time(f.t)}</td><td>{f.asset.toUpperCase()}</td><td>{f.candle === 'green' ? 'verte' : f.candle === 'red' ? 'rouge' : 'neutre'}</td>
+                  <td>{f.side === 'buy' ? 'Achat de Hausse' : 'Vente de Hausse'}</td><td className="num">{f.shares}</td><td className="num">{tick(f.price)}</td><td className="num">{(f.rebate * 100).toFixed(1)}¢</td></tr>))}</tbody>
+            </table></div>
+          )}
+        </section>
+      )}
+
       <section className="card">
         <h2>Derniers signaux</h2>
         {signals.length === 0 ? <p className="muted">Aucun pour l’instant : le moteur attend qu’ETH soit en retard ou parte avec de l’avance.</p> : (<>

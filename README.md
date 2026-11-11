@@ -34,6 +34,14 @@ Le prix à battre d'un marché est la moyenne des 60 secondes **avant** son ouve
 
 Sur 4 jours d'historique (prix du dernier échange vu, revente rapide) : +2,9 ¢ par part pour une avance de plus de 3 ¢, +4,6 ¢ au-delà de 6 ¢, +8,3 ¢ au-delà de 10 ¢ ; encore +0,5 à +3,7 ¢ avec 2,5 secondes de retard. Sur BTC l'effet disparaît dès 2,5 secondes : il n'y est pas tradé.
 
+### Tenue de marché (simulation)
+
+En parallèle, un bureau de tenue de marché fictif cote en permanence les deux côtés du carnet « Hausse » de BTC et d'ETH, aux meilleurs prix, et renouvelle ses ordres toutes les 5 secondes. Après une bougie verte de 5 secondes (prix spot), il achète 20 parts et en vend 10 ; après une bougie rouge, l'inverse (`MM_SIZE`, `MM_CANDLE_SECONDS`).
+
+Un ordre n'est compté exécuté que si une transaction réelle le traverse, ou l'atteint après les ordres qui étaient devant lui dans la file. Le teneur de marché ne paie aucun frais ; 20 % des frais payés par la contrepartie sont crédités sur un compte de récompenses en pUSD (`MM_REBATE`). Le stock restant est valorisé au résultat du marché.
+
+Sur 4 jours d'historique BTC, cette règle donne entre −7 $ et +0,75 $ par marché selon l'hypothèse de file d'attente, récompenses comprises ; elle bat la version symétrique et la version inversée dans tous les cas. Le risque principal est le stock accumulé, qui n'est pas plafonné. Simulation uniquement : aucun ordre réel n'est envoyé par ce bureau.
+
 ### Quand la position est-elle fermée ?
 
 Chaque réglage a sa règle de sortie, vérifiée cinq fois par seconde :

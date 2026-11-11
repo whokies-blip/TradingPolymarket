@@ -194,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 5;
+  version: 6;
   createdAt: number;
   updatedAt: number;
   tickCount: number;
@@ -214,6 +214,8 @@ export interface State {
   gate: GateCheck[];
   geo?: { t: number; blocked: boolean; country: string };
   log: LogEntry[];
+  /** Paper market-making desk. */
+  mm: MmState;
   /** Latest filled paper orders of all strategies, newest first. */
   tape: TapeEntry[];
   recent: { key: string; asset: Asset; start: number; outcome: Side | 'void'; shadows: number }[];
@@ -245,4 +247,36 @@ export interface LiveFrame {
   assets: Record<Asset, LiveAsset>;
   /** Only in the first frame of a session: the last two minutes of spot prices, [time, price]. */
   history?: Record<Asset, [number, number][]>;
+}
+
+/** One passive order of the market-making desk that got filled. */
+export interface MmFill {
+  t: number;
+  asset: Asset;
+  /** 'buy' = bought Up shares on our bid, 'sell' = sold Up shares on our ask. */
+  side: 'buy' | 'sell';
+  price: number;
+  shares: number;
+  /** Colour of the 5-second candle that set the sizes. */
+  candle: 'green' | 'red' | 'flat';
+  rebate: number;
+}
+
+/**
+ * Paper market making: quotes both sides of the "Up" book all the time, sized by the last 5-second
+ * candle. Makers pay no fee; 20% of the fee paid by the taker who hits us goes to the rewards account.
+ */
+export interface MmState {
+  /** Trading result of settled markets (inventory valued at the market's outcome). */
+  pnl: number;
+  /** Rewards account, in pUSD: 20% of takers' fees on our fills. */
+  rewards: number;
+  fills: number;
+  volume: number;
+  markets: number;
+  /** Open inventory per market: net Up shares (negative = short Up, i.e. long Down) and cash spent/received. */
+  books: Record<string, { net: number; cash: number }>;
+  recent: MmFill[];
+  /** [time, trading result + rewards] after each settled market. */
+  equity: [number, number][];
 }
