@@ -73,7 +73,7 @@ async function main() {
     };
     const signals = state.strategies.reduce((n, s) => n + (s.stats.signals ?? 0), 0);
     const fills = state.strategies.reduce((n, s) => n + s.stats.n, 0);
-    const open = Object.values(state.windows).reduce((n, w) => n + w.shadows.length, 0);
+    const open = Object.values(state.windows).reduce((n, w) => n + w.shadows.filter((s) => !s.exit).length, 0);
     say(`${market('btc')} · ${market('eth')} · ${state.settledWindows} marchés réglés · ordres simulés ${signals} (${fills + open} exécutés) · champion : ${state.championId ?? 'aucun'} · démo ${state.demo.bankroll.toFixed(2)} $`);
   };
 

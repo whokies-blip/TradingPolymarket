@@ -1,13 +1,13 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
-import { liveBalance, liveConfigured, placeLiveBuy } from './live';
+import { liveBalance, liveConfigured, placeLiveBuy, placeLiveSell } from './live';
 import { mulberry32, round } from './math';
 import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
-import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, type Book, type Level } from './polymarket';
+import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, simulateSell, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
 import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
-import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
-import type { Account, Asset, GateCheck, LiveFrame, LogEntry, Side, State, Strategy, Trade, WindowRec } from './types';
+import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, exitsEarly, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
+import type { Account, Asset, ExitReason, GateCheck, LiveFrame, LogEntry, ShadowTrade, Side, State, Strategy, Trade, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -17,7 +17,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = seedGenomes().map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 3,
+    version: 4,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -41,7 +41,7 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 3) return state;
+  if (state && state.version === 4) return state;
   const fresh = initState(cfg);
   if (state?.control) fresh.control = { killSwitch: !!state.control.killSwitch, liveArmed: false };
   return fresh;
@@ -59,7 +59,7 @@ export function log(state: State, level: LogEntry['level'], msg: string, now = n
 const dayStart = (now: number) => Math.floor(now / 86400) * 86400;
 
 export function recentDemoRoi(state: State, n = 50): { roi: number; count: number } {
-  const done = state.demo.trades.filter((t) => t.status === 'won' || t.status === 'lost').slice(0, n);
+  const done = state.demo.trades.filter((t) => t.status === 'won' || t.status === 'lost' || t.status === 'sold').slice(0, n);
   const cost = done.reduce((s, t) => s + t.cost, 0);
   return { roi: cost > 0 ? done.reduce((s, t) => s + (t.pnl ?? 0), 0) / cost : 0, count: done.length };
 }
@@ -152,18 +152,89 @@ export function decide(state: State, cfg: Config, win: WindowRec, f: Features, q
  * arrives a moment later. If the price is gone (beyond one tick of slippage), there is no fill.
  * This matters: counting fills at the price we merely saw made losing strategies look profitable.
  */
-export function applyFills(state: State, cfg: Config, win: WindowRec, pending: Pending[], asksUp: Level[], asksDown: Level[], now: number) {
+export function applyFills(state: State, cfg: Config, win: WindowRec, pending: Pending[], asksUp: Level[], asksDown: Level[], now: number, bidUp: number | null = null, bidDown: number | null = null) {
   for (const { strat, sig } of pending) {
     const asks = sig.side === 'up' ? asksUp : asksDown;
     const cap = Math.min(0.99, sig.ask + cfg.slippage);
     const fill = simulateBuy(asks, cfg.shadowStake, win.feeRate, win.feeExp, cap);
     if (!fill) continue;
     const cost = round(fill.cost / fill.shares);
-    win.shadows.push({ sid: strat.id, side: sig.side, cost, q: round(sig.q), elapsed: Math.round(now - win.start) });
+    win.shadows.push({ sid: strat.id, side: sig.side, cost, q: round(sig.q), elapsed: Math.round(now - win.start), t: now, shares: round(fill.shares, 2), bid0: sig.side === 'up' ? bidUp : bidDown });
     state.tape.unshift({ t: now, key: win.key, sid: strat.id, asset: win.asset, side: sig.side, cost, q: round(sig.q), lead: sig.lead === undefined ? null : round(sig.lead) });
     if (state.tape.length > 60) state.tape.length = 60;
     if (strat.id === state.championId && !state.control.killSwitch && !win.demoTradeId) openDemo(state, cfg, win, strat, sig, asks, cap, now);
   }
+}
+
+const EXIT_LABEL: Record<ExitReason, string> = { tp: 'objectif de gain atteint', stop: 'stop', time: 'durée maximale' };
+
+/**
+ * Should this position be closed now? Three independent rules, set per strategy:
+ *  - take profit: it can be sold for the stake plus the target, AFTER the exit fee;
+ *  - stop: the price has fallen by the set share of the stake since entry. It is measured on the
+ *    price move, not on resale value: spread and two fees already make any position worth roughly
+ *    10% less the instant it is bought, so a stop on resale value would fire immediately;
+ *  - timer: the catch-up we bet on has not happened within the allotted time.
+ */
+export function exitReason(g: Strategy['genes'], sh: ShadowTrade, bid: number, win: WindowRec, now: number): ExitReason | null {
+  if (!exitsEarly(g) || sh.t === undefined || !sh.shares) return null;
+  const net = bid - feePerShare(bid, win.feeRate, win.feeExp);
+  if (g.takeProfit > 0 && net >= sh.cost * (1 + g.takeProfit)) return 'tp';
+  if (g.stopMove > 0 && sh.bid0 != null && bid <= sh.bid0 - g.stopMove * sh.cost) return 'stop';
+  if (g.maxHold > 0 && now - sh.t >= g.maxHold) return 'time';
+  return null;
+}
+
+/**
+ * Sell a paper position against the bids as they are when the order lands. Returns false, leaving
+ * the position open, if the whole position cannot be sold at `minPrice` or better.
+ */
+export function executeExit(state: State, cfg: Config, win: WindowRec, sh: ShadowTrade, why: ExitReason, bids: Level[], minPrice: number, now: number): boolean {
+  if (sh.exit || !sh.shares) return false;
+  const sale = simulateSell(bids, sh.shares, win.feeRate, win.feeExp, minPrice);
+  if (!sale || sale.shares < sh.shares - 0.01) return false;
+  const net = sale.proceeds / sale.shares;
+  sh.exit = { t: now, net: round(net), why };
+  const strat = state.strategies.find((s) => s.id === sh.sid);
+  if (strat) record(strat.stats, net - sh.cost, sh.cost, cfg.ewDecay);
+  const entry = state.tape.find((e) => e.key === win.key && e.sid === sh.sid && !e.result);
+  if (entry) {
+    entry.result = why;
+    entry.pnl = round(net - sh.cost);
+  }
+  // The demo account holds the champion's position: close it the same way, for its own size.
+  const trade = state.demo.trades.find((t) => t.id === win.demoTradeId && t.status === 'open' && t.strategyId === sh.sid);
+  const own = trade ? simulateSell(bids, trade.shares, win.feeRate, win.feeExp, minPrice) : null;
+  if (trade && own && own.shares >= trade.shares - 0.01) {
+    trade.status = 'sold';
+    trade.pnl = round(own.proceeds - trade.cost);
+    trade.settledAt = now;
+    state.demo.bankroll += own.proceeds;
+    state.demo.pnl += trade.pnl;
+    state.demo.fees += own.fee;
+    state.demo.nSettled++;
+    if (trade.pnl > 0) state.demo.nWins++;
+    state.demo.equity.push([Math.round(now), round(state.demo.bankroll, 2)]);
+    log(state, 'trade', `DÉMO ${win.asset.toUpperCase()} : vente (${EXIT_LABEL[why]}) à ${(own.price * 100).toFixed(1)}¢, ${trade.pnl >= 0 ? '+' : '−'}${Math.abs(trade.pnl).toFixed(2)} $.`, now);
+  }
+  return true;
+}
+
+/** Sell a real position (fill-or-kill). If the sale fails the position simply stays open until settlement. */
+async function closeLive(state: State, cfg: Config, win: WindowRec, trade: Trade, tokenId: string, minPrice: number, persist: () => Promise<void>) {
+  const res = await placeLiveSell(cfg, { tokenId, shares: trade.shares, minPrice, tickSize: win.tickSize, negRisk: win.negRisk });
+  if (!res.ok) return log(state, 'error', `RÉEL ${win.asset.toUpperCase()} : vente échouée — ${res.error}. La position reste ouverte jusqu’au règlement.`);
+  const now = nowSec();
+  trade.status = 'sold';
+  trade.pnl = round(res.cost! - trade.cost);
+  trade.settledAt = now;
+  state.live.bankroll += res.cost!;
+  state.live.pnl += trade.pnl;
+  state.live.nSettled++;
+  if (trade.pnl > 0) state.live.nWins++;
+  state.live.equity.push([Math.round(now), round(state.live.bankroll, 2)]);
+  log(state, 'trade', `RÉEL ${win.asset.toUpperCase()} : vente pour ${res.cost!.toFixed(2)} $, ${trade.pnl >= 0 ? '+' : '−'}${Math.abs(trade.pnl).toFixed(2)} $.`, now);
+  await persist();
 }
 
 function openDemo(state: State, cfg: Config, win: WindowRec, strat: Strategy, sig: Signal, asks: Level[], cap: number, now: number) {
@@ -254,7 +325,7 @@ async function processAsset(state: State, cfg: Config, asset: Asset, persist: ()
   const [confirmUp, confirmDown] = await Promise.all([fetchBook(win.upToken), fetchBook(win.downToken)]);
   const later = nowSec();
   if (windowStartOf(later) !== start) return;
-  applyFills(state, cfg, win, pending, confirmUp.asks, confirmDown.asks, later);
+  applyFills(state, cfg, win, pending, confirmUp.asks, confirmDown.asks, later, confirmUp.bids[0]?.price ?? null, confirmDown.bids[0]?.price ?? null);
 }
 
 async function openLive(state: State, cfg: Config, win: WindowRec, strat: Strategy, sig: Signal, cap: number, now: number, persist: () => Promise<void>, fast = false) {
@@ -305,6 +376,7 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   win.settledAt = now;
   if (outcome !== 'void') {
     for (const sh of win.shadows) {
+      if (sh.exit) continue; // sold before the end: already counted
       const strat = state.strategies.find((s) => s.id === sh.sid);
       if (strat) record(strat.stats, (sh.side === outcome ? 1 : 0) - sh.cost, sh.cost, cfg.ewDecay);
     }
@@ -313,7 +385,11 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   for (const acct of [state.demo, state.live]) {
     for (const t of acct.trades) if (t.windowStart === win.start && t.asset === win.asset) settleTrade(acct, t, outcome, now);
   }
-  for (const entry of state.tape) if (entry.key === win.key) entry.result = outcome === 'void' ? 'void' : entry.side === outcome ? 'won' : 'lost';
+  for (const entry of state.tape) {
+    if (entry.key !== win.key || entry.result) continue;
+    entry.result = outcome === 'void' ? 'void' : entry.side === outcome ? 'won' : 'lost';
+    entry.pnl = outcome === 'void' ? 0 : round((entry.side === outcome ? 1 : 0) - entry.cost);
+  }
   state.recent.unshift({ key: win.key, asset: win.asset, start: win.start, outcome, shadows: win.shadows.length });
   if (state.recent.length > 60) state.recent.length = 60;
   state.settledWindows++;
@@ -390,6 +466,8 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
 
   const retryAt = new Map<string, number>();
   const confirms: { due: number; win: WindowRec; p: Pending }[] = [];
+  const exits: { due: number; win: WindowRec; sh: ShadowTrade; why: ExitReason; minPrice: number }[] = [];
+  const exiting = new Set<ShadowTrade>();
   const background = new Set<Promise<unknown>>();
   const run = (p: Promise<unknown>) => {
     background.add(p);
@@ -496,7 +574,31 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
         while (confirms.length && confirms[0].due <= Date.now()) {
           const c = confirms.shift()!;
           if (c.win.start !== start || c.win.outcome) continue;
-          applyFills(state, cfg, c.win, [c.p], feed.asks(c.win.upToken), feed.asks(c.win.downToken), nowSec());
+          applyFills(state, cfg, c.win, [c.p], feed.asks(c.win.upToken), feed.asks(c.win.downToken), nowSec(), feed.best(c.win.upToken).bid, feed.best(c.win.downToken).bid);
+        }
+        // Open positions: is it time to take the gain, cut the loss, or give up waiting?
+        for (const a of ASSETS) {
+          const win = state.windows[`${a}-${start}`];
+          if (!win) continue;
+          for (const sh of win.shadows) {
+            if (sh.exit || exiting.has(sh)) continue;
+            const strat = state.strategies.find((s) => s.id === sh.sid);
+            const bid = feed.best(sh.side === 'up' ? win.upToken : win.downToken).bid;
+            const why = strat && bid !== null ? exitReason(strat.genes, sh, bid, win, now) : null;
+            if (!why) continue;
+            exiting.add(sh);
+            // A profit is only taken at the price seen (minus one tick); a stop or a timer sells at market.
+            exits.push({ due: Date.now() + cfg.streamConfirmMs, win, sh, why, minPrice: why === 'tp' ? bid! - cfg.slippage : 0 });
+          }
+        }
+        while (exits.length && exits[0].due <= Date.now()) {
+          const x = exits.shift()!;
+          exiting.delete(x.sh);
+          if (x.win.start !== start || x.win.outcome) continue;
+          const token = x.sh.side === 'up' ? x.win.upToken : x.win.downToken;
+          const sold = executeExit(state, cfg, x.win, x.sh, x.why, feed.bids(token), x.minPrice, nowSec());
+          const live = sold ? state.live.trades.find((t) => t.id === x.win.liveTradeId && t.status === 'open' && t.strategyId === x.sh.sid) : undefined;
+          if (live) run(closeLive(state, cfg, x.win, live, token, x.why === 'tp' ? x.minPrice : 0.01, persist));
         }
       }
 

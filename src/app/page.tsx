@@ -15,6 +15,7 @@ const time = (t: number) => new Date(t * 1000).toLocaleTimeString('fr-FR', { hou
 const dateTime = (t: number) => new Date(t * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 const cls = (x: number) => (x > 0 ? 'pos' : x < 0 ? 'neg' : '');
 const SIDE = { up: 'Hausse', down: 'Baisse' } as const;
+const RESULT = { won: 'Gagné à la fin', lost: 'Perdu à la fin', void: 'Annulé', tp: 'Vendu, objectif atteint', stop: 'Vendu, stop', time: 'Vendu, durée max' } as const;
 
 type Engine = 'off' | 'connecting' | 'live' | 'busy' | 'error' | 'denied';
 
@@ -153,7 +154,7 @@ function Tile({ label, value, hint, tone }: { label: string; value: string; hint
 
 function Trades({ trades }: { trades: Trade[] }) {
   if (!trades.length) return <p className="muted">Aucun trade pour l’instant.</p>;
-  const status = { open: ['En cours', 'info'], won: ['Gagné', 'good'], lost: ['Perdu', 'bad'], void: ['Annulé', ''], failed: ['Échec', 'warn'] } as const;
+  const status = { open: ['En cours', 'info'], won: ['Gagné', 'good'], lost: ['Perdu', 'bad'], void: ['Annulé', ''], failed: ['Échec', 'warn'], sold: ['Vendu avant la fin', 'info'] } as const;
   return (
     <div className="tablewrap">
       <table>
@@ -489,7 +490,7 @@ export default function Page() {
               <tr key={`${e.key}${e.sid}${i}`}>
                 <td>{time(e.t)}</td><td>{e.sid}</td><td>{e.asset.toUpperCase()} {SIDE[e.side]}</td><td className="num">{(e.cost * 100).toFixed(1)}¢</td><td className="num">{Math.round(e.q * 100)} %</td>
                 <td className="num">{e.lead === null ? '—' : `${e.lead > 0 ? '+' : '−'}${Math.abs(e.lead * 100).toFixed(1)} pts`}</td>
-                <td><span className={`badge ${e.result === 'won' ? 'good' : e.result === 'lost' ? 'bad' : e.result === 'void' ? '' : 'info'}`}>{e.result === 'won' ? `Gagné +${((1 - e.cost) * 100).toFixed(0)}¢` : e.result === 'lost' ? `Perdu −${(e.cost * 100).toFixed(0)}¢` : e.result === 'void' ? 'Annulé' : 'En attente du résultat'}</span></td>
+                <td><span className={`badge ${!e.result ? 'info' : e.result === 'void' ? '' : (e.pnl ?? 0) > 0 ? 'good' : 'bad'}`}>{!e.result ? 'Position ouverte' : e.result === 'void' ? 'Annulé' : `${RESULT[e.result]} ${centsSigned(e.pnl)}`}</span></td>
               </tr>))}</tbody>
           </table></div>
         )}
@@ -504,7 +505,7 @@ export default function Page() {
               ? <>Aucun avantage prouvé pour l’instant. Meilleur candidat : <b>{bestCandidate.id}</b>, {centsSigned(bestCandidate.edge)} ± {((bestCandidate.se ?? 0) * 100).toFixed(1)}¢ par part sur {bestCandidate.n} trades (t = {bestCandidate.tstat?.toFixed(1)}). Il faut t ≥ {v.settings.championZ} sur au moins {v.settings.championMinTrades} trades.</>
               : <>Aucun trade simulé pour l’instant. Une stratégie devient champion avec t ≥ {v.settings.championZ} sur au moins {v.settings.championMinTrades} trades.</>}
         </div>
-        <p className="sub">Une seule idée, en 24 réglages : acheter ETH quand son prix Polymarket est en retard sur sa juste valeur <b>et</b> que le BTC vient de pousser dans le même sens. Aucun trade sur BTC. Chaque stratégie parie fictivement 10 $. L’ordre n’est compté que si le prix est encore disponible une demi-seconde plus tard dans le carnet, le temps qu’un vrai ordre arrive. « Gain par part » : ce que rapporte en moyenne une part achetée, frais déduits ; il faut qu’il soit positif de façon fiable (t élevé) pour gagner de l’argent.</p>
+        <p className="sub">Une seule idée, en 24 réglages : acheter ETH quand son prix Polymarket est en retard sur sa juste valeur <b>et</b> que le BTC vient de pousser dans le même sens. Aucun trade sur BTC. Trois quarts des réglages revendent tôt (objectif de gain, stop, durée maximale) ; un quart garde jusqu’à la fin, pour comparer. Chaque stratégie parie fictivement 10 $. L’ordre n’est compté que si le prix est encore disponible une demi-seconde plus tard dans le carnet, le temps qu’un vrai ordre arrive. « Gain par part » : ce que rapporte en moyenne une part achetée, frais déduits ; il faut qu’il soit positif de façon fiable (t élevé) pour gagner de l’argent.</p>
         <div className="tablewrap">
           <table>
             <thead><tr><th>Stratégie</th><th>Type</th><th>Réglages</th><th className="num">Trades</th><th className="num">Ordres exécutés</th><th className="num">Gagnés</th><th className="num">Gain par part</th><th className="num">Récent</th><th className="num">Par dollar misé</th><th className="num">Fiabilité (t)</th></tr></thead>

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { config } from '../src/lib/config';
-import { applyFills, computeGate, decide, initState, settleWindow, improve } from '../src/lib/engine';
+import { applyFills, computeGate, decide, executeExit, exitReason, initState, settleWindow, improve } from '../src/lib/engine';
 import { mulberry32, phi } from '../src/lib/math';
 import { computeFeatures, fairProb, featureVector, learn, newModel, predict } from '../src/lib/model';
-import { feePerShare, simulateBuy } from '../src/lib/polymarket';
+import { feePerShare, simulateBuy, simulateSell } from '../src/lib/polymarket';
 import { strikeOf, twap, type Series } from '../src/lib/prices';
 import { emptyStats, evaluate, evolve, genome, pickChampion, record, score, seedGenomes } from '../src/lib/strategies';
-import type { Strategy, WindowRec } from '../src/lib/types';
+import type { ShadowTrade, Strategy, WindowRec } from '../src/lib/types';
 
 const flat = (start: number, n: number, price: (t: number) => number): Series => {
   const ticks = Array.from({ length: n }, (_, i) => ({ t: start + i, c: price(start + i), v: 1, tb: 0.5 }));
@@ -133,6 +133,41 @@ test('lag strategies trade ETH only when BTC has just pushed the same way', () =
   // BTC pushed up but ETH Up is not cheap enough: no trade
   assert.equal(evaluate(g, push(0.08), { ...cheapUp, askUp: q - 0.03 }, null), null);
   assert.ok(seedGenomes().length === 24 && seedGenomes().every((x) => x.family === 'lag'));
+});
+
+test('exits: take the gain after fees, stop on a price move, give up after a while', () => {
+  const cfg = config();
+  const state = initState(cfg, 0);
+  const win: WindowRec = { key: 'eth-300', asset: 'eth', start: 300, slug: 's', upToken: 'u', downToken: 'd', feeRate: 0.07, feeExp: 1, tickSize: 0.01, minSize: 5, negRisk: false, strike: 100, shadows: [], obs: [] };
+  const g = genome('lag', { takeProfit: 0.1, stopMove: 0.1, maxHold: 60 });
+  const strat = state.strategies[0];
+  strat.genes = g;
+  // Bought 30 shares at 40¢ + fee: all-in cost ≈ 41.7¢; the bid was 39¢.
+  const cost = 0.4 + feePerShare(0.4, 0.07, 1);
+  const pos = (): ShadowTrade => ({ sid: strat.id, side: 'up', cost, q: 0.5, elapsed: 100, t: 400, shares: 30, bid0: 0.39 });
+  // Right after buying, resale value is already ~10% below cost — that must NOT count as a stop.
+  assert.equal(exitReason(g, pos(), 0.39, win, 401), null);
+  assert.equal(exitReason(g, pos(), 0.45, win, 401), null); // +5¢ on the price is not yet +10% after the exit fee
+  assert.equal(exitReason(g, pos(), 0.48, win, 401), 'tp');
+  assert.equal(exitReason(g, pos(), 0.34, win, 401), 'stop'); // price fell 5¢ = more than 10% of the stake
+  assert.equal(exitReason(g, pos(), 0.39, win, 461), 'time');
+  assert.equal(exitReason(genome('lag', { takeProfit: 0, stopMove: 0, maxHold: 0 }), pos(), 0.9, win, 461), null); // hold-to-the-end control
+
+  const sh = pos();
+  win.shadows.push(sh);
+  state.windows[win.key] = win;
+  state.tape.unshift({ t: 400, key: win.key, sid: strat.id, asset: 'eth', side: 'up', cost, q: 0.5, lead: 0.05 });
+  // Only 10 shares bid at the target price: the position cannot be closed there, so it stays open.
+  assert.equal(executeExit(state, cfg, win, sh, 'tp', [{ price: 0.48, size: 10 }, { price: 0.4, size: 500 }], 0.47, 402), false);
+  assert.equal(sh.exit, undefined);
+  assert.equal(executeExit(state, cfg, win, sh, 'tp', [{ price: 0.48, size: 500 }], 0.47, 403), true);
+  const net = 0.48 - feePerShare(0.48, 0.07, 1);
+  assert.ok(Math.abs(strat.stats.sum - (net - cost)) < 1e-3 && strat.stats.wins === 1);
+  assert.equal(state.tape[0].result, 'tp');
+  // Settlement must not count a position that was already sold.
+  settleWindow(state, cfg, win, 'down', 700);
+  assert.equal(strat.stats.n, 1);
+  assert.ok(Math.abs(simulateSell([{ price: 0.5, size: 10 }, { price: 0.4, size: 10 }], 15, 0.07, 1)!.price - (0.5 * 10 + 0.4 * 5) / 15) < 1e-9);
 });
 
 test('online model learns a signal the market misses', () => {

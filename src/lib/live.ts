@@ -13,6 +13,7 @@ export interface LiveOrder {
   ok: boolean;
   orderId?: string;
   shares?: number;
+  /** Cash paid (buy) or received (sell). */
   cost?: number;
   error?: string;
 }
@@ -53,6 +54,34 @@ export async function liveBalance(cfg: Config): Promise<number | null> {
     return Number(r.balance) / 1e6;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Sell `shares` of one outcome, fill-or-kill, never below `minPrice`. Returns the cash received.
+ */
+export async function placeLiveSell(
+  cfg: Config,
+  o: { tokenId: string; shares: number; minPrice: number; tickSize: number; negRisk: boolean },
+): Promise<LiveOrder> {
+  try {
+    const c = await client(cfg);
+    const { Side, OrderType } = await import('@polymarket/clob-client');
+    const res = await c.createAndPostMarketOrder(
+      { tokenID: o.tokenId, amount: Math.floor(o.shares * 100) / 100, side: Side.SELL, price: Math.max(0.01, o.minPrice) },
+      { tickSize: String(o.tickSize), negRisk: o.negRisk },
+      OrderType.FOK,
+    );
+    if (!res || res.success === false || res.error || !res.orderID) {
+      return { ok: false, error: String(res?.errorMsg || res?.error || 'ordre refusé').slice(0, 200) };
+    }
+    // For a sale the order "makes" shares and "takes" cash.
+    const shares = Number(res.makingAmount);
+    const cost = Number(res.takingAmount);
+    if (!(cost > 0) || !(shares > 0)) return { ok: false, orderId: res.orderID, error: `ordre non exécuté (${res.status ?? 'statut inconnu'})` };
+    return { ok: true, orderId: res.orderID, cost, shares };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message || e).slice(0, 200) };
   }
 }
 

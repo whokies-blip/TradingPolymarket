@@ -21,6 +21,9 @@ const BOUNDS: Record<Exclude<keyof Genes, 'family'>, [number, number]> = {
   maxPrice: [0.5, 0.97],
   lead: [0.01, 0.15],
   leadWindow: [5, 40],
+  takeProfit: [0, 0.4],
+  stopMove: [0, 0.4],
+  maxHold: [0, 180],
 };
 
 export const emptyStats = (): Stats => ({ n: 0, wins: 0, signals: 0, sum: 0, sumSq: 0, sumCost: 0, ewN: 0, ew: 0 });
@@ -33,12 +36,16 @@ function normalise(g: Genes): Genes {
   out.minElapsed = Math.round(out.minElapsed);
   out.maxElapsed = Math.round(Math.max(out.maxElapsed, out.minElapsed + 30));
   // Snap to a window the engine actually measures.
+  // Tiny targets or stops are pure noise next to the cost of a round trip: treat them as "off".
+  if (out.takeProfit < 0.03) out.takeProfit = 0;
+  if (out.stopMove < 0.03) out.stopMove = 0;
+  out.maxHold = out.maxHold < 5 ? 0 : Math.round(out.maxHold);
   out.leadWindow = LEAD_WINDOWS.reduce((best, w) => (Math.abs(w - out.leadWindow) < Math.abs(best - out.leadWindow) ? w : best));
   return out;
 }
 
 export const genome = (family: Family, over: Partial<Genes> = {}): Genes =>
-  normalise({ family, minEdge: 0.07, minElapsed: 10, maxElapsed: 235, volMult: 1, minPrice: 0.05, maxPrice: 0.95, lead: 0.03, leadWindow: 10, ...over });
+  normalise({ family, minEdge: 0.07, minElapsed: 10, maxElapsed: 235, volMult: 1, minPrice: 0.05, maxPrice: 0.95, lead: 0.03, leadWindow: 10, takeProfit: 0.1, stopMove: 0.1, maxHold: 60, ...over });
 
 /**
  * The starting line-up: 24 variants of one idea, "ETH is late on BTC".
@@ -51,9 +58,18 @@ export const genome = (family: Family, over: Partial<Genes> = {}): Genes =>
  */
 export function seedGenomes(): Genes[] {
   const out: Genes[] = [];
-  for (const minEdge of [0.04, 0.07, 0.1, 0.14]) {
-    for (const lead of [0.02, 0.04, 0.07]) {
-      for (const leadWindow of [10, 20]) out.push(genome('lag', { minEdge, lead, leadWindow }));
+  // How to get out. On the same 4 days, holding to the end earned about +1¢ per share with ±45¢
+  // swings (indistinguishable from luck), while taking +10% and cutting when the price falls 10%
+  // earned +2.5¢ to +4.4¢ with ±13¢ swings, held ~15 s. The last one is the control.
+  const exits: Partial<Genes>[] = [
+    { takeProfit: 0.1, stopMove: 0.1, maxHold: 60 },
+    { takeProfit: 0.1, stopMove: 0, maxHold: 60 },
+    { takeProfit: 0.05, stopMove: 0.1, maxHold: 30 },
+    { takeProfit: 0, stopMove: 0, maxHold: 0 },
+  ];
+  for (const minEdge of [0.04, 0.07, 0.1]) {
+    for (const lead of [0.03, 0.05]) {
+      for (const exit of exits) out.push(genome('lag', { minEdge, lead, leadWindow: 10, ...exit }));
     }
   }
   return out;
@@ -223,9 +239,20 @@ export function evolve(pop: Strategy[], generation: number, windowCount: number,
   return { population: pop.filter((s) => !losers.includes(s)).concat(added), removed: losers, added };
 }
 
+export const exitsEarly = (g: Genes) => g.takeProfit > 0 || g.stopMove > 0 || g.maxHold > 0;
+
+export function describeExit(g: Genes): string {
+  if (!exitsEarly(g)) return 'garde jusqu’à la fin du marché';
+  const parts: string[] = [];
+  if (g.takeProfit > 0) parts.push(`gain +${Math.round(g.takeProfit * 100)} %`);
+  if (g.stopMove > 0) parts.push(`stop si le prix recule de ${Math.round(g.stopMove * 100)} %`);
+  if (g.maxHold > 0) parts.push(`${g.maxHold} s max`);
+  return `sortie : ${parts.join(' · ')}`;
+}
+
 export function describe(g: Genes): string {
   const t = `${g.minElapsed}–${g.maxElapsed}s`;
   const e = `avantage ≥ ${(g.minEdge * 100).toFixed(1)}¢`;
-  if (g.family === 'lag') return `ETH sous-évalué d’au moins ${(g.minEdge * 100).toFixed(0)}¢ · BTC a poussé d’au moins ${(g.lead * 100).toFixed(0)} pts en ${g.leadWindow} s`;
+  if (g.family === 'lag') return `ETH sous-évalué d’au moins ${(g.minEdge * 100).toFixed(0)}¢ · BTC a poussé d’au moins ${(g.lead * 100).toFixed(0)} pts en ${g.leadWindow} s · ${describeExit(g)}`;
   return g.family === 'fair' ? `${e}, ${t}, vol ×${g.volMult}` : `${e}, ${t}`;
 }

@@ -20,6 +20,12 @@ export interface Genes {
   lead: number;
   /** …and over how many seconds. */
   leadWindow: number;
+  /** Sell once the position can be closed at this net gain (share of the stake; 0 = no target). */
+  takeProfit: number;
+  /** Sell once the price has fallen this far below where it was at entry (share of the stake; 0 = no stop). */
+  stopMove: number;
+  /** Sell after this many seconds at the latest (0 = hold until the market settles). */
+  maxHold: number;
 }
 
 export interface Stats {
@@ -54,7 +60,15 @@ export interface ShadowTrade {
   cost: number;
   q: number;
   elapsed: number;
+  /** When it filled, how many shares, and the best bid for those shares at that moment. */
+  t?: number;
+  shares?: number;
+  bid0?: number | null;
+  /** Set when the position was sold before the market settled: net proceeds per share and why. */
+  exit?: { t: number; net: number; why: ExitReason };
 }
+
+export type ExitReason = 'tp' | 'stop' | 'time';
 
 /** One paper order that filled, shown on the dashboard as it happens. */
 export interface TapeEntry {
@@ -66,7 +80,9 @@ export interface TapeEntry {
   cost: number;
   q: number;
   lead: number | null;
-  result?: 'won' | 'lost' | 'void';
+  result?: 'won' | 'lost' | 'void' | ExitReason;
+  /** Profit per share once known. */
+  pnl?: number;
 }
 
 export interface Trade {
@@ -85,7 +101,7 @@ export interface Trade {
   edge: number;
   strategyId: string;
   openedAt: number;
-  status: 'open' | 'won' | 'lost' | 'void' | 'failed';
+  status: 'open' | 'won' | 'lost' | 'void' | 'failed' | 'sold';
   pnl?: number;
   settledAt?: number;
   orderId?: string;
@@ -178,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 3;
+  version: 4;
   createdAt: number;
   updatedAt: number;
   tickCount: number;

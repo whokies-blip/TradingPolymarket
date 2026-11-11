@@ -26,7 +26,18 @@ Le système ne trade **que l'ETH**, et seulement quand deux conditions sont réu
 1. **Le BTC vient de pousser** : sa probabilité de finir en hausse a bougé d'au moins quelques points en 10 à 20 secondes.
 2. **L'ETH est en retard** : son prix sur Polymarket est inférieur à sa propre juste valeur, dans le sens de la poussée, d'au moins quelques cents après frais.
 
-Les 24 stratégies en compétition sont 24 réglages de cette idée (ampleur du retard exigé × force de la poussée × durée d'observation).
+Les 24 stratégies en compétition sont 24 réglages de cette idée : ampleur du retard exigé × force de la poussée × règle de sortie.
+
+### Quand la position est-elle fermée ?
+
+Chaque réglage a sa règle de sortie, vérifiée cinq fois par seconde :
+
+- **Objectif de gain** (par défaut +10 %) : vendre dès que la position peut être revendue avec ce gain, *frais de sortie déduits*.
+- **Stop** (par défaut 10 %) : vendre si le prix a reculé de 10 % de la mise depuis l'entrée. Il est mesuré sur le mouvement du prix, pas sur la valeur de revente : à cause de l'écart achat/vente et des frais à l'entrée et à la sortie, une position vaut déjà ~10 % de moins à la seconde où elle est achetée, et un stop sur la valeur de revente se déclencherait immédiatement.
+- **Durée maximale** (30 ou 60 s) : si le rattrapage attendu n'a pas eu lieu, vendre.
+- Un quart des réglages **garde jusqu'au règlement** du marché, pour comparer.
+
+Sur 4 jours d'historique (exécution prudente) : garder jusqu'à la fin rapporte environ +1 ¢ par part avec ±45 ¢ d'écart par trade, autant dire du hasard ; sortir à +10 % / stop 10 % rapporte +2,5 à +4,4 ¢ avec ±13 ¢ d'écart, pour une détention d'environ 15 secondes. L'avantage est donc le rattrapage d'ETH dans les secondes qui suivent, pas l'issue du marché. Attention : quand le prix décroche brutalement, un stop se fait exécuter bien plus bas que prévu.
 
 ### Ce que montrent les données
 

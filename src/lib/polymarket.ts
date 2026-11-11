@@ -151,6 +151,35 @@ export function simulateBuy(asks: Level[], usd: number, rate: number, exp: numbe
   return { shares, price: paid / shares, fee, cost: paid + fee, worst };
 }
 
+export interface Sale {
+  shares: number;
+  /** Average price received per share, before fees. */
+  price: number;
+  fee: number;
+  /** Cash received after fees. */
+  proceeds: number;
+}
+
+/**
+ * Simulate selling `shares` at market by walking the bid side (best bid first), paying the taker fee
+ * at each level. Never sells below `minPrice`; returns what could actually be sold.
+ */
+export function simulateSell(bids: Level[], shares: number, rate: number, exp: number, minPrice = 0): Sale | null {
+  let left = shares;
+  let got = 0;
+  let fee = 0;
+  for (const lvl of bids) {
+    if (lvl.price < minPrice || left <= 1e-9) break;
+    const take = Math.min(lvl.size, left);
+    got += take * lvl.price;
+    fee += take * feePerShare(lvl.price, rate, exp);
+    left -= take;
+  }
+  const sold = shares - left;
+  if (sold <= 0) return null;
+  return { shares: sold, price: got / sold, fee, proceeds: got - fee };
+}
+
 export async function fetchGeoblock(): Promise<{ blocked: boolean; country: string }> {
   const r = await getJson<{ blocked?: boolean; country?: string }>('https://polymarket.com/api/geoblock', 4000);
   return { blocked: !!r.blocked, country: r.country || '?' };
