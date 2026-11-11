@@ -395,6 +395,7 @@ export default function Page() {
         </div>
         <div className="row">
           <span className={`badge ${engine === 'live' ? 'good' : stale ? 'bad' : 'good'}`}>{engine === 'live' ? 'Moteur actif · temps réel' : stale ? `Moteur inactif depuis ${Math.round((clock - v.updatedAt) / 60)} min` : `Moteur actif · ${time(v.updatedAt)}`}</span>
+          <button className="btn" onClick={() => control('resetAll', 'Remettre toutes les statistiques à zéro (stratégies, signaux, compte démo, tenue de marché) ?')}>Tout remettre à zéro</button>
           <div className="tabs" role="tablist">
             <button role="tab" aria-selected={mode === 'demo'} onClick={() => setMode('demo')}>Démo</button>
             <button role="tab" aria-selected={mode === 'live'} onClick={() => setMode('live')}>Production</button>

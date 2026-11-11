@@ -209,7 +209,7 @@ export interface State {
   demo: Account;
   live: Account;
   models: Record<Asset, ModelState>;
-  control: { killSwitch: boolean; liveArmed: boolean; resetDemo?: boolean };
+  control: { killSwitch: boolean; liveArmed: boolean; resetDemo?: boolean; resetAll?: boolean };
   snapshots: Partial<Record<Asset, Snapshot>>;
   gate: GateCheck[];
   geo?: { t: number; blocked: boolean; country: string };

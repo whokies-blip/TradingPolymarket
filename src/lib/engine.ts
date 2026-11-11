@@ -711,6 +711,13 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
 
 function applyControl(state: State, cfg: Config, control: State['control']) {
   state.control = { killSwitch: !!control.killSwitch, liveArmed: !!control.liveArmed };
+  if (control.resetAll) {
+    // Start every counter again from zero: strategies, signals, demo account, market-making desk, model.
+    const lock = state.lock;
+    Object.assign(state, initState(cfg), { control: state.control, lock, geo: state.geo });
+    log(state, 'info', 'Toutes les statistiques ont été remises à zéro.');
+    return;
+  }
   if (control.resetDemo) {
     state.demo = newAccount(cfg.demoBankroll);
     for (const w of Object.values(state.windows)) delete w.demoTradeId;

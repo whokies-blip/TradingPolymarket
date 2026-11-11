@@ -1,12 +1,12 @@
 import { isAdmin } from '@/lib/auth';
 import { config } from '@/lib/config';
-import { liveBalance, log, migrate } from '@/lib/engine';
+import { initState, liveBalance, log, migrate } from '@/lib/engine';
 import { liveConfigured } from '@/lib/live';
 import { ConflictError, getStore } from '@/lib/store';
 
 export const dynamic = 'force-dynamic';
 
-const ACTIONS = ['kill', 'resume', 'arm', 'disarm', 'resetDemo', 'check', 'balance'] as const;
+const ACTIONS = ['kill', 'resume', 'arm', 'disarm', 'resetDemo', 'resetAll', 'check', 'balance'] as const;
 type Action = (typeof ACTIONS)[number];
 
 export async function POST(req: Request) {
@@ -29,6 +29,11 @@ export async function POST(req: Request) {
     if (action === 'arm') state.control.liveArmed = true;
     if (action === 'disarm') state.control.liveArmed = false;
     if (action === 'resetDemo') state.control.resetDemo = true;
+    if (action === 'resetAll') {
+      // Reset what is stored now, and flag it so a session already running resets its own copy too.
+      Object.assign(state, initState(cfg), { control: { ...state.control, resetAll: true }, lock: state.lock, geo: state.geo });
+      log(state, 'info', 'Toutes les statistiques ont été remises à zéro.');
+    }
     const label: Record<string, string> = { kill: "Arrêt d'urgence activé.", resume: 'Reprise après arrêt.', arm: 'Trading réel ARMÉ.', disarm: 'Trading réel désarmé.' };
     if (label[action]) log(state, action === 'resume' || action === 'disarm' ? 'info' : 'warn', label[action]);
     try {
