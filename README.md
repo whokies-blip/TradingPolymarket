@@ -28,6 +28,12 @@ Le système ne trade **que l'ETH**, et seulement quand deux conditions sont réu
 
 Les 24 stratégies en compétition sont 24 réglages de cette idée : ampleur du retard exigé × force de la poussée × règle de sortie.
 
+### Seconde idée : le départ en avance
+
+Le prix à battre d'un marché est la moyenne des 60 secondes **avant** son ouverture. Si le prix a bougé pendant cette minute, ETH démarre déjà au-dessus ou en dessous du prix à battre, alors que le carnet est encore proche de 50 ¢. Six réglages achètent ce « départ en avance » sur ETH dans les 12 premières secondes, puis revendent vite.
+
+Sur 4 jours d'historique (prix du dernier échange vu, revente rapide) : +2,9 ¢ par part pour une avance de plus de 3 ¢, +4,6 ¢ au-delà de 6 ¢, +8,3 ¢ au-delà de 10 ¢ ; encore +0,5 à +3,7 ¢ avec 2,5 secondes de retard. Sur BTC l'effet disparaît dès 2,5 secondes : il n'y est pas tradé.
+
 ### Quand la position est-elle fermée ?
 
 Chaque réglage a sa règle de sortie, vérifiée cinq fois par seconde :

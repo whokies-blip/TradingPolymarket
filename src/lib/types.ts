@@ -1,6 +1,6 @@
 export type Asset = 'btc' | 'eth';
 export type Side = 'up' | 'down';
-export type Family = 'lag' | 'fair' | 'learned';
+export type Family = 'lag' | 'open' | 'fair' | 'learned';
 export type Mode = 'demo' | 'live';
 
 /** Tunable parameters of one strategy. Evolution mutates these. */
@@ -194,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 4;
+  version: 5;
   createdAt: number;
   updatedAt: number;
   tickCount: number;

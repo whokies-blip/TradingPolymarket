@@ -6,7 +6,7 @@ import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simu
 import { BookFeed, SpotFeed } from './feeds';
 import { blendSigma, getSeries, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
-import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, exitsEarly, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
+import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, exitsEarly, openGenomes, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
 import type { Account, Asset, ExitReason, GateCheck, LiveFrame, LogEntry, ShadowTrade, Side, State, Strategy, Trade, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
@@ -15,9 +15,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, bankroll, trades: [], equity: [], nSettled: 0, nWins: 0, fees: 0, staked: 0, pnl: 0 });
 
 export function initState(cfg: Config, now = nowSec()): State {
-  const strategies: Strategy[] = seedGenomes().map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
+  const strategies: Strategy[] = [...seedGenomes(), ...openGenomes()].map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 4,
+    version: 5,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -41,7 +41,15 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 4) return state;
+  if (state && state.version === 5) return state;
+  if (state && (state.version as number) === 4) {
+    // Add the "head start" strategies next to the existing ones, keeping everything learned so far.
+    const now = nowSec();
+    openGenomes().forEach((genes, i) => state.strategies.push({ id: `o-${i}`, gen: state.generation, genes, stats: emptyStats(), bornAt: now, bornWindow: state.settledWindows }));
+    state.version = 5;
+    log(state, 'evolve', 'Nouvelle famille ajoutée : « départ en avance d’ETH » (6 réglages).', now);
+    return state;
+  }
   const fresh = initState(cfg);
   if (state?.control) fresh.control = { killSwitch: !!state.control.killSwitch, liveArmed: false };
   return fresh;
@@ -496,6 +504,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
     }
     const f = computeFeatures(s, start, win.strike, now);
     if (!f) return;
+    f.asset = asset;
     // ETH is judged against BTC: how hard has BTC just pushed, and which way?
     if (asset === 'eth') {
       const btc = state.windows[`btc-${start}`];

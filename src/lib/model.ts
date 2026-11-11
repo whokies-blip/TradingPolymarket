@@ -4,6 +4,8 @@ import { flowImbalance, priceAt, twap, type Series } from './prices';
 import type { ModelState, Obs } from './types';
 
 export interface Features {
+  /** Which market this is (set by the engine). */
+  asset?: 'btc' | 'eth';
   elapsed: number;
   spot: number;
   strike: number;

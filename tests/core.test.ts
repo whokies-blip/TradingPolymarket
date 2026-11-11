@@ -133,6 +133,13 @@ test('lag strategies trade ETH only when BTC has just pushed the same way', () =
   // BTC pushed up but ETH Up is not cheap enough: no trade
   assert.equal(evaluate(g, push(0.08), { ...cheapUp, askUp: q - 0.03 }, null), null);
   assert.ok(seedGenomes().length === 24 && seedGenomes().every((x) => x.family === 'lag'));
+  // "Head start": ETH only, first seconds only, no BTC condition.
+  const o = genome('open', { minEdge: 0.04, minElapsed: 0 });
+  o.maxElapsed = 12;
+  const early = { ...f, elapsed: 5 };
+  assert.equal(evaluate(o, { ...early, asset: 'btc' }, cheapUp, null), null);
+  assert.equal(evaluate(o, { ...early, asset: 'eth' }, cheapUp, null)?.side, 'up');
+  assert.equal(evaluate(o, { ...f, asset: 'eth' }, cheapUp, null), null); // 100 s in: too late
 });
 
 test('exits: take the gain after fees, stop on a price move, give up after a while', () => {

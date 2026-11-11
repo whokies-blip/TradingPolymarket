@@ -5,6 +5,7 @@ import type { Family, Genes, Side, Stats, Strategy } from './types';
 
 export const FAMILY_LABEL: Record<Family, string> = {
   lag: 'Retard d’ETH sur BTC',
+  open: 'Départ en avance d’ETH',
   fair: 'Juste valeur',
   learned: 'Modèle appris',
 };
@@ -75,6 +76,20 @@ export function seedGenomes(): Genes[] {
   return out;
 }
 
+/**
+ * Second idea, "head start": the price to beat is the average of the 60 seconds BEFORE the open, so
+ * when the price moved during that minute the market opens already above or below it, while the
+ * book still sits near 50¢. On 4 days of ETH markets, buying the head start in the first 10 seconds
+ * and selling quickly earned +3¢ to +8¢ per share, and still +0.5¢ to +4¢ with a 2.5 s delay.
+ */
+export function openGenomes(): Genes[] {
+  const out: Genes[] = [];
+  for (const minEdge of [0.04, 0.07, 0.1]) {
+    for (const stopMove of [0.1, 0]) out.push(genome('open', { minEdge, minElapsed: 0, maxElapsed: 30, takeProfit: 0.1, stopMove, maxHold: 60 }));
+  }
+  return out.map((g) => ({ ...g, maxElapsed: 12 }));
+}
+
 export function randomGenome(rand: () => number): Genes {
   const g = genome('lag');
   for (const key of Object.keys(BOUNDS) as (keyof typeof BOUNDS)[]) {
@@ -124,6 +139,7 @@ export function probUp(g: Genes, f: Features, qModel: number | null): number | n
 export function evaluate(g: Genes, f: Features, quote: Quote, qModel: number | null): Signal | null {
   if (f.elapsed < g.minElapsed || f.elapsed > g.maxElapsed) return null;
   // "ETH is late": only on ETH, only when BTC has just pushed, and only in the direction of the push.
+  if (g.family === 'open' && f.asset !== 'eth') return null;
   const lead = g.family === 'lag' ? f.lead?.[g.leadWindow] : undefined;
   if (g.family === 'lag' && (lead === undefined || Math.abs(lead) < g.lead)) return null;
   const p = probUp(g, f, qModel);
@@ -253,6 +269,7 @@ export function describeExit(g: Genes): string {
 export function describe(g: Genes): string {
   const t = `${g.minElapsed}–${g.maxElapsed}s`;
   const e = `avantage ≥ ${(g.minEdge * 100).toFixed(1)}¢`;
+  if (g.family === 'open') return `dans les ${g.maxElapsed} premières secondes, ETH sous-évalué d’au moins ${(g.minEdge * 100).toFixed(0)}¢ · ${describeExit(g)}`;
   if (g.family === 'lag') return `ETH sous-évalué d’au moins ${(g.minEdge * 100).toFixed(0)}¢ · BTC a poussé d’au moins ${(g.lead * 100).toFixed(0)} pts en ${g.leadWindow} s · ${describeExit(g)}`;
   return g.family === 'fair' ? `${e}, ${t}, vol ×${g.volMult}` : `${e}, ${t}`;
 }
