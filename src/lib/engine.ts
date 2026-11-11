@@ -609,7 +609,21 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
               else if (tr.token === w.downToken) onTrade(state.mm, cfg, q, w, 1 - tr.price, tr.size, tr.takerBuy, now);
             }
           }
-          // …then, at each candle close, cancel and re-quote both sides at the best prices.
+          // …then re-post at once any order that was completely filled, at the current best price
+          // and within the inventory cap…
+          if (cfg.mmRefill) {
+            for (const a of ASSETS) {
+              const q = desk[a];
+              const w = q ? state.windows[q.key] : undefined;
+              if (!q || !w || w.start !== start || now - start > cfg.lastEntry) continue;
+              const top = feed.best(w.upToken);
+              if (top.ask === null || top.bid === null || top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
+              const room = capSizes(q.sizes, state.mm.books[w.key]?.net ?? 0, cfg.mmMaxStock);
+              if (q.bid && q.bid.left <= 0 && room.bid > 0) q.bid = { price: top.bid, left: room.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) };
+              if (q.ask && q.ask.left <= 0 && room.ask > 0) q.ask = { price: top.ask, left: room.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) };
+            }
+          }
+          // …and, at each candle close, cancel and re-quote both sides at the best prices.
           const candle = Math.floor(now / cfg.mmSeconds);
           if (candle !== lastCandle) {
             lastCandle = candle;
@@ -625,7 +639,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
               const size = quoteSizes(open, close, cfg.mmSize);
               const capped = capSizes(size, state.mm.books[w.key]?.net ?? 0, cfg.mmMaxStock);
               desk[a] = {
-                key: w.key, asset: a, candle: size.candle,
+                key: w.key, asset: a, candle: size.candle, sizes: { bid: size.bid, ask: size.ask },
                 bid: { price: top.bid, left: capped.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) },
                 ask: { price: top.ask, left: capped.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) },
               };

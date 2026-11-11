@@ -40,7 +40,7 @@ En parallèle, un bureau de tenue de marché fictif cote en permanence les deux 
 
 Un ordre n'est compté exécuté que si une transaction réelle le traverse, ou l'atteint après les ordres qui étaient devant lui dans la file. Le teneur de marché ne paie aucun frais ; 20 % des frais payés par la contrepartie sont crédités sur un compte de récompenses en pUSD (`MM_REBATE`). Le stock restant est valorisé au résultat du marché.
 
-Sur 4 jours d'historique BTC, cette règle donne entre −7 $ et +0,75 $ par marché selon l'hypothèse de file d'attente, récompenses comprises ; elle bat la version symétrique et la version inversée dans tous les cas. Le stock est plafonné à 20 parts par côté et par marché (`MM_MAX_STOCK`) : au plafond, le bureau ne cote plus que le côté qui le réduit. Sur l'historique, ce plafond ramène les écarts de ±28 $ à ±6 $ par marché sans changer sensiblement le résultat moyen. Simulation uniquement : aucun ordre réel n'est envoyé par ce bureau.
+Sur 4 jours d'historique BTC, cette règle donne entre −7 $ et +0,75 $ par marché selon l'hypothèse de file d'attente, récompenses comprises ; elle bat la version symétrique et la version inversée dans tous les cas. Le stock est plafonné à 20 parts par côté et par marché (`MM_MAX_STOCK`) : au plafond, le bureau ne cote plus que le côté qui le réduit. Un ordre entièrement exécuté est reposé aussitôt au meilleur prix (`MM_REFILL=false` pour attendre la bougie suivante ; sur l'historique, le rechargement immédiat exécute plus et perd plus : −7,5 $ contre −5,8 $ par marché BTC). Sur l'historique, ce plafond ramène les écarts de ±28 $ à ±6 $ par marché sans changer sensiblement le résultat moyen. Simulation uniquement : aucun ordre réel n'est envoyé par ce bureau.
 
 ### Quand la position est-elle fermée ?
 

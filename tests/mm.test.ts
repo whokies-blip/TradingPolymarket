@@ -5,7 +5,7 @@ import { capSizes, newMm, onTrade, quoteSizes, settleMm, type Quotes } from '../
 import type { WindowRec } from '../src/lib/types';
 
 const win: WindowRec = { key: 'btc-300', asset: 'btc', start: 300, slug: 's', upToken: 'u', downToken: 'd', feeRate: 0.07, feeExp: 1, tickSize: 0.01, minSize: 5, negRisk: false, shadows: [], obs: [] };
-const quotes = (): Quotes => ({ key: win.key, asset: 'btc', candle: 'green', bid: { price: 0.5, left: 20, queue: 100 }, ask: { price: 0.51, left: 10, queue: 0 } });
+const quotes = (): Quotes => ({ key: win.key, asset: 'btc', candle: 'green', sizes: { bid: 20, ask: 10 }, bid: { price: 0.5, left: 20, queue: 100 }, ask: { price: 0.51, left: 10, queue: 0 } });
 
 test('candle colour sets the sizes: green buys double, red sells double', () => {
   assert.deepEqual(quoteSizes(100, 101, 10), { candle: 'green', bid: 20, ask: 10 });

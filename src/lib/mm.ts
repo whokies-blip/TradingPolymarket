@@ -17,6 +17,8 @@ export interface Quotes {
   candle: MmFill['candle'];
   bid: Resting | null;
   ask: Resting | null;
+  /** Sizes decided at the last candle close, reused when an order is re-posted before the next one. */
+  sizes: { bid: number; ask: number };
 }
 
 /**

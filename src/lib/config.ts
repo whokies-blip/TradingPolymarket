@@ -65,6 +65,9 @@ export const config = () => ({
   mmSize: num('MM_SIZE', 10),
   /** Most shares the desk may hold on one side of one market; beyond it, it only quotes the other side. */
   mmMaxStock: num('MM_MAX_STOCK', 20),
+  /** Re-post an order as soon as it is fully filled instead of waiting for the next candle.
+   *  (On 4 days of history this filled more and lost more: −7.5 $ vs −5.8 $ per BTC market.) */
+  mmRefill: bool('MM_REFILL', true),
   mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
   mmRebate: num('MM_REBATE', 0.2),
   // --- auth
