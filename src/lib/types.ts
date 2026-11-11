@@ -253,7 +253,7 @@ export interface LiveFrame {
 export interface MmFill {
   t: number;
   asset: Asset;
-  /** 'buy' = bought Up shares on our bid, 'sell' = sold Up shares on our ask. */
+  /** 'buy' = bought Up shares on our bid. 'sell' = sold Up on our ask, which on Polymarket means buying Down at 1 − price. */
   side: 'buy' | 'sell';
   price: number;
   shares: number;

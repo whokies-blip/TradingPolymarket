@@ -40,7 +40,7 @@ export function publicView(state: State, store: Store) {
     gate: computeGate(state, cfg, now),
     log: state.log.slice(0, 60),
     tape: (state.tape ?? []).slice(0, 240),
-    mm: { ...state.mm, recent: state.mm.recent.slice(0, 20), inventory: Object.values(state.mm.books).reduce((n, b) => n + Math.abs(b.net), 0), enabled: cfg.mmEnabled, size: cfg.mmSize, seconds: cfg.mmSeconds, rebate: cfg.mmRebate },
+    mm: { ...state.mm, recent: state.mm.recent.slice(0, 20), stockUp: Object.values(state.mm.books).reduce((n, b) => n + Math.max(0, b.net), 0), stockDown: Object.values(state.mm.books).reduce((n, b) => n + Math.max(0, -b.net), 0), enabled: cfg.mmEnabled, size: cfg.mmSize, seconds: cfg.mmSeconds, rebate: cfg.mmRebate },
     recent: state.recent.slice(0, 40),
     settings: {
       liveTrading: cfg.liveTrading, liveConfigured: liveConfigured(cfg), liveStakeUsd: cfg.liveStakeUsd, liveMaxDailyLoss: cfg.liveMaxDailyLoss,
