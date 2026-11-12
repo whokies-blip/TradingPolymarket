@@ -427,7 +427,6 @@ export default function Page() {
       )}
       {err && <div className="banner">Connexion au serveur perdue : {err}</div>}
       {!v.settings.durable && <div className="banner">Stockage non persistant : l’historique sera perdu entre deux exécutions. Connectez un stockage Vercel Blob ou Upstash Redis au projet.</div>}
-      {v.control.killSwitch && <div className="banner">Arrêt d’urgence actif : aucun nouveau trade (démo ou réel) n’est ouvert.</div>}
 
       {live && running && (
         <section>
@@ -478,9 +477,6 @@ export default function Page() {
               {v.control.liveArmed
                 ? <button className="btn" onClick={() => control('disarm')}>Désarmer</button>
                 : <button className="btn primary" disabled={!v.settings.liveConfigured} onClick={() => control('arm', 'Armer le trading avec de l’argent réel ?')}>Armer le trading réel</button>}
-              {v.control.killSwitch
-                ? <button className="btn" onClick={() => control('resume')}>Lever l’arrêt d’urgence</button>
-                : <button className="btn danger" onClick={() => control('kill')}>Arrêt d’urgence</button>}
               <button className="btn" disabled={!v.settings.liveConfigured} onClick={() => control('balance')}>Voir le solde</button>
             </div>
             {balance !== null && <p className="sub">Solde USDC disponible : <b>{usd(balance)}</b></p>}
@@ -629,7 +625,7 @@ export default function Page() {
             <h2>Production — tenue de marché en argent réel</h2>
             <span className={`badge ${v.mmLive.gate.every((g) => g.ok) ? 'good' : 'warn'}`}>{v.mmLive.gate.every((g) => g.ok) ? 'Actif : ordres réels' : 'Bloqué : aucun ordre réel'}</span>
           </div>
-          <p className="sub">Copie les réglages du bureau <b>{v.mmLive.desk ?? '—'}</b> sur BTC avec de vrais ordres à cours limité : jamais de frais de preneur (ordres « post-only »), expiration automatique après 2 minutes, annulation à chaque fin de session. Ordres de {v.mmLive.limits.size} parts, stock maximum {v.mmLive.limits.maxStock} parts, perte maximale {usd(v.mmLive.limits.maxExposure, 0)} par marché et {usd(v.mmLive.limits.maxDailyLoss, 0)} par jour. Les parts gagnantes doivent être encaissées (« Claim ») sur Polymarket.</p>
+          <p className="sub">Copie les réglages du bureau <b>{v.mmLive.desk ?? '—'}</b> sur BTC avec de vrais ordres à cours limité : jamais de frais de preneur (ordres « post-only »), expiration automatique après 2 minutes, annulation à chaque fin de session. « Désarmer » annule immédiatement tous les ordres réels. Ordres de {v.mmLive.limits.size} parts, stock maximum {v.mmLive.limits.maxStock} parts, perte maximale {usd(v.mmLive.limits.maxExposure, 0)} par marché et {usd(v.mmLive.limits.maxDailyLoss, 0)} par jour. Les parts gagnantes doivent être encaissées (« Claim ») sur Polymarket.</p>
           <div className="grid g2" style={{ marginTop: 8 }}>
             <div>
               {v.mmLive.gate.map((g) => (<div className="check" key={g.id}><span className={`mark ${g.ok ? 'pos' : 'neg'}`}>{g.ok ? '✓' : '✗'}</span><span style={{ flex: 1 }}>{g.label}</span><span className="muted">{g.detail}</span></div>))}
@@ -647,9 +643,6 @@ export default function Page() {
                 {v.control.liveArmed
                   ? <button className="btn" onClick={() => control('disarm')}>Désarmer</button>
                   : <button className="btn primary" disabled={!v.mmLive.configured} onClick={() => control('arm', 'Armer la tenue de marché en argent réel ? Des ordres réels seront placés dès que toutes les conditions seront remplies.')}>Armer</button>}
-                {v.control.killSwitch
-                  ? <button className="btn" onClick={() => control('resume')}>Lever l’arrêt d’urgence</button>
-                  : <button className="btn danger" onClick={() => control('kill')}>Arrêt d’urgence</button>}
                 <button className="btn" disabled={!v.mmLive.configured} onClick={() => control('balance')}>Voir le solde</button>
               </div>
               {balance !== null && <p className="sub">Solde USDC disponible : <b>{usd(balance)}</b></p>}

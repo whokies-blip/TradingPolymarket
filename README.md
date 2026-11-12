@@ -48,9 +48,9 @@ Les réglages de départ viennent d'une recherche aléatoire sur 50 000 combinai
 
 Désactivée par défaut. Elle copie les réglages d'un bureau simulé (le bureau en tête, ou celui de `MM_LIVE_DESK`) sur BTC, avec de vrais ordres à cours limité sur Polymarket.
 
-- **Ordres** : « post-only » (jamais de frais de preneur), expiration automatique 2 minutes après leur pose, remplacés au plus toutes les 5 secondes, annulés à chaque fin de session du moteur. Seuls les ordres du système sont annulés, jamais les vôtres.
+- **Ordres** : « post-only » (jamais de frais de preneur), expiration automatique 2 minutes après leur pose, remplacés au plus toutes les 5 secondes, annulés à chaque fin de session du moteur, et tous annulés immédiatement par « Désarmer ». Seuls les ordres du système sont annulés, jamais les vôtres.
 - **Limites** : ordres de 5 parts (`MM_LIVE_SIZE`), stock maximum 10 parts (`MM_LIVE_MAX_STOCK`), perte maximale 10 $ par marché si le marché finit du mauvais côté (`MM_LIVE_MAX_EXPOSURE`), arrêt pour la journée après 20 $ de perte (`MM_LIVE_MAX_DAILY_LOSS`, marchés en cours inclus au prix du marché).
-- **Conditions** : `MM_LIVE=true`, clé de portefeuille, région autorisée par Polymarket, armement depuis le tableau de bord, arrêt d'urgence inactif, et un bureau prouvé en simulation (300 marchés et t ≥ 2 par défaut ; `MM_LIVE_MIN_MARKETS` et `MM_LIVE_MIN_TSTAT` à 0 pour passer outre, à vos risques).
+- **Conditions** : `MM_LIVE=true`, clé de portefeuille, région autorisée par Polymarket, armement depuis le tableau de bord, et un bureau prouvé en simulation (300 marchés et t ≥ 2 par défaut ; `MM_LIVE_MIN_MARKETS` et `MM_LIVE_MIN_TSTAT` à 0 pour passer outre, à vos risques).
 - **Encaissement** : les parts gagnantes restent à réclamer (« Claim ») sur Polymarket.
 
 Ce mode n'a jamais été exécuté avec de vrais fonds : il est testé contre un faux carnet d'ordres uniquement.

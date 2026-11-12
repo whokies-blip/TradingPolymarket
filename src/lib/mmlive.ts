@@ -53,7 +53,6 @@ export function mmLiveGate(state: State, cfg: Config, keyOk: boolean, now: numbe
     { id: 'keys', label: 'Portefeuille Polymarket configuré', ok: keyOk, detail: keyOk ? 'clé présente' : 'clé absente' },
     { id: 'geo', label: 'Région autorisée par Polymarket', ok: !!state.geo && !state.geo.blocked, detail: state.geo ? `${state.geo.country}${state.geo.blocked ? ' — bloqué' : ''}` : 'non vérifié' },
     { id: 'armed', label: 'Armé depuis le tableau de bord', ok: state.control.liveArmed, detail: state.control.liveArmed ? 'armé' : 'désarmé' },
-    { id: 'kill', label: "Arrêt d'urgence inactif", ok: !state.control.killSwitch, detail: state.control.killSwitch ? 'arrêt actif' : 'ok' },
     {
       id: 'proof',
       label: `Bureau prouvé en simulation (≥ ${cfg.mmLiveMinMarkets} marchés, t ≥ ${cfg.mmLiveMinTstat})`,

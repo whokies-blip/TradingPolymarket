@@ -82,7 +82,7 @@ export function migrate(state: State | null, cfg: Config): State {
     return migrate(state, cfg);
   }
   const fresh = initState(cfg);
-  if (state?.control) fresh.control = { killSwitch: !!state.control.killSwitch, liveArmed: false };
+  if (state?.control) fresh.control = { killSwitch: false, liveArmed: false };
   return fresh;
 }
 
@@ -114,7 +114,6 @@ export function computeGate(state: State, cfg: Config, now = nowSec()): GateChec
     { id: 'keys', label: 'Portefeuille Polymarket configuré', ok: liveConfigured(cfg), detail: liveConfigured(cfg) ? 'clé présente' : 'clé absente' },
     { id: 'geo', label: 'Région autorisée par Polymarket', ok: !!state.geo && !state.geo.blocked, detail: state.geo ? `${state.geo.country}${state.geo.blocked ? ' — bloqué' : ''}` : 'non vérifié' },
     { id: 'armed', label: 'Armé depuis le tableau de bord', ok: state.control.liveArmed, detail: state.control.liveArmed ? 'armé' : 'désarmé' },
-    { id: 'kill', label: "Arrêt d'urgence inactif", ok: !state.control.killSwitch, detail: state.control.killSwitch ? 'arrêt actif' : 'ok' },
     {
       id: 'champion',
       label: `Champion prouvé (≥ ${cfg.liveMinTrades} trades, t ≥ ${cfg.liveMinTstat})`,
@@ -844,7 +843,8 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
 // ------------------------------------------------------------------ tick
 
 function applyControl(state: State, cfg: Config, control: State['control']) {
-  state.control = { killSwitch: !!control.killSwitch, liveArmed: !!control.liveArmed };
+  // No more emergency stop: disarming does the same job (every real order is cancelled at once).
+  state.control = { killSwitch: false, liveArmed: !!control.liveArmed };
   if (control.resetAll) {
     // Start every counter again from zero: strategies, signals, demo account, market-making desk, model.
     const lock = state.lock;

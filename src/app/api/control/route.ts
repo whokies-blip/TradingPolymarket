@@ -24,7 +24,8 @@ export async function POST(req: Request) {
   for (let attempt = 0; attempt < 4; attempt++) {
     const { state: read, etag } = await store.read();
     const state = migrate(read, cfg);
-    if (action === 'kill') state.control = { ...state.control, killSwitch: true, liveArmed: false };
+    // 'kill' now simply disarms (the separate emergency stop was removed); 'resume' is kept for old clients.
+    if (action === 'kill') state.control = { ...state.control, killSwitch: false, liveArmed: false };
     if (action === 'resume') state.control.killSwitch = false;
     if (action === 'arm') state.control.liveArmed = true;
     if (action === 'disarm') state.control.liveArmed = false;
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
       Object.assign(state, initState(cfg), { control: { ...state.control, resetAll: true }, lock: state.lock, geo: state.geo, mmLive: state.mmLive ?? initState(cfg).mmLive });
       log(state, 'info', 'Toutes les statistiques ont été remises à zéro.');
     }
-    const label: Record<string, string> = { kill: "Arrêt d'urgence activé.", resume: 'Reprise après arrêt.', arm: 'Trading réel ARMÉ.', disarm: 'Trading réel désarmé.' };
+    const label: Record<string, string> = { kill: 'Trading réel désarmé.', resume: 'Reprise après arrêt.', arm: 'Trading réel ARMÉ.', disarm: 'Trading réel désarmé.' };
     if (label[action]) log(state, action === 'resume' || action === 'disarm' ? 'info' : 'warn', label[action]);
     try {
       await store.write(state, etag);
