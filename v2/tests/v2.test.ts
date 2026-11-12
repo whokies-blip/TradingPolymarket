@@ -81,3 +81,20 @@ test('latency metrics: percentiles', () => {
   assert.equal(m.n, 100);
   assert.ok(m.p50 >= 50 && m.p50 <= 51 && m.p95 >= 95 && m.max === 100);
 });
+
+test('a desk switched off is never the leader, never evolved away, never copied by production', async () => {
+  const { deskLeader, evolveDesks } = await import('../src/desks');
+  const { liveDesk } = await import('../src/prodesk');
+  const s = initState();
+  s.desks.forEach((d, i) => { d.stats.n = 30; d.stats.sum = 30 * (i - 3); d.stats.sumSq = 30 * (i - 3) ** 2 + 30; });
+  const best = s.desks[s.desks.length - 1];
+  const worst = s.desks[0];
+  assert.equal(deskLeader(s.desks)?.id, best.id);
+  best.off = true;
+  worst.off = true;
+  assert.notEqual(deskLeader(s.desks)?.id, best.id);
+  assert.notEqual(liveDesk(s, { ...config(), mmLiveDesk: best.id })?.id, best.id);
+  const res = evolveDesks(s.desks, 99, () => 0.5, 0);
+  assert.ok(res && res.removed.id !== worst.id && res.removed.id !== best.id);
+  assert.ok(s.desks.includes(worst) && s.desks.includes(best));
+});

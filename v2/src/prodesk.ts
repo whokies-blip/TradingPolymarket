@@ -43,7 +43,7 @@ export function unrealized(b: MmLiveBook, upMid: number): number {
 }
 
 export function liveDesk(state: State, cfg: Config): MmDesk | null {
-  return (cfg.mmLiveDesk && state.desks.find((d) => d.id === cfg.mmLiveDesk)) || deskLeader(state.desks);
+  return (cfg.mmLiveDesk && state.desks.find((d) => d.id === cfg.mmLiveDesk && !d.off)) || deskLeader(state.desks);
 }
 
 /** Every condition that must hold before a real order is placed. */

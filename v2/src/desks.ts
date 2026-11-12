@@ -153,7 +153,8 @@ export function stopOut(mm: MmState, key: string, asset: Asset, bids: Level[], w
 }
 
 /** Desk currently doing best: highest average per market minus one standard error, after 10 markets. */
-export function deskLeader(desks: MmDesk[]): MmDesk | null {
+export function deskLeader(all: MmDesk[]): MmDesk | null {
+  const desks = all.filter((d) => !d.off);
   const ok = desks.filter((d) => d.stats.n >= 10);
   if (!ok.length) return desks.length ? [...desks].sort((a, b) => b.stats.n - a.stats.n || (score(b.stats).mean - score(a.stats).mean))[0] : null;
   const lcb = (d: MmDesk) => score(d.stats).mean - (Number.isFinite(score(d.stats).se) ? score(d.stats).se : 0);
@@ -165,7 +166,7 @@ export function deskLeader(desks: MmDesk[]): MmDesk | null {
  * changed copy of the leader. Called about once an hour.
  */
 export function evolveDesks(desks: MmDesk[], generation: number, rand: () => number, now: number, minMarkets = 20): { removed: MmDesk; added: MmDesk } | null {
-  const ripe = desks.filter((d) => d.stats.n >= minMarkets);
+  const ripe = desks.filter((d) => !d.off && d.stats.n >= minMarkets);
   if (ripe.length < 2) return null;
   const leader = deskLeader(desks)!;
   const worst = [...ripe].sort((a, b) => score(a.stats).mean - score(b.stats).mean)[0];

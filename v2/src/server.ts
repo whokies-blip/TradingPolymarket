@@ -12,7 +12,7 @@ const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf
  *   GET  /                  dashboard (asks for the admin token)
  *   GET  /api/view?token=   full state
  *   GET  /api/stream?token= server-sent events: a frame 5×/s, the full view every 5 s
- *   POST /api/control       {"action": "arm" | "disarm" | "reset"} with Authorization: Bearer <token>
+ *   POST /api/control       {"action": "arm" | "disarm" | "reset"} or {"action": "desk", "desk": id, "on": bool} with Authorization: Bearer <token>
  */
 export function startServer(cfg: Config, engine: Engine) {
   const same = (a: string, b: string) => {
@@ -56,12 +56,15 @@ export function startServer(cfg: Config, engine: Engine) {
       if (url.pathname === '/api/control' && req.method === 'POST') {
         let body = '';
         for await (const chunk of req) body += chunk;
-        const action = (JSON.parse(body || '{}') as { action?: string }).action;
+        const { action, desk, on } = JSON.parse(body || '{}') as { action?: string; desk?: string; on?: boolean };
         if (action === 'arm') {
           if (!cfg.mmLive) return json(res, 400, { error: 'Production non activée (MM_LIVE=true).' });
           engine.setArmed(true);
         } else if (action === 'disarm') engine.setArmed(false);
         else if (action === 'reset') engine.resetSimulation();
+        else if (action === 'desk') {
+          if (!engine.setDeskEnabled(String(desk), on !== false)) return json(res, 404, { error: 'Bureau inconnu.' });
+        }
         else return json(res, 400, { error: 'Action inconnue.' });
         return json(res, 200, { ok: true });
       }

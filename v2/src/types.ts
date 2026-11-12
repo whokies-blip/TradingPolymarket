@@ -81,6 +81,8 @@ export interface MmDesk {
   mm: MmState;
   stats: Stats;
   bornAt: number;
+  /** Switched off from the dashboard: posts no new quotes, never evolved away, never copied by production. */
+  off?: boolean;
 }
 
 export interface MmLiveOrder {

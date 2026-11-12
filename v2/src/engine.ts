@@ -122,6 +122,17 @@ export class Engine {
     this.save();
   }
 
+  /** Switch one desk on or off. A desk switched off cancels its quotes at once; stock it holds settles at expiry. */
+  setDeskEnabled(id: string, on: boolean): boolean {
+    const d = this.state.desks.find((x) => x.id === id);
+    if (!d) return false;
+    d.off = !on;
+    if (!on) this.quotes.delete(id);
+    this.log('info', `Bureau ${id} ${on ? 'activé' : 'désactivé'}.`);
+    this.save();
+    return true;
+  }
+
   resetSimulation() {
     // Real-money records are never wiped.
     const live: MmLiveState = this.state.mmLive;
@@ -320,7 +331,7 @@ export class Engine {
       for (const d of this.state.desks) {
         const dq = this.quotesOf(d.id);
         dq[a] = undefined;
-        if (!usable || !size || el < d.genes.startAt || el > d.genes.stopAt) continue;
+        if (d.off || !usable || !size || el < d.genes.startAt || el > d.genes.stopAt) continue;
         const book = d.mm.books[w!.key];
         const capped = capSizes(size, book?.net ?? 0, d.genes.maxStock);
         const px = deskPrices({ bid: top!.bid!, ask: top!.ask! }, book, d.genes, vol);
@@ -483,7 +494,7 @@ export class Engine {
         return {
           id: d.id, parent: d.parent ?? null, genes: d.genes, markets: d.stats.n, perMarket: d.stats.n ? d.stats.sum / d.stats.n : null,
           se: Number.isFinite(sc.se) ? sc.se : null, tstat: d.stats.n >= 2 ? sc.tstat : null, total: d.mm.pnl + d.mm.rewards, rewards: d.mm.rewards,
-          fills: d.mm.fills, leader: d.id === leader?.id, recent: d.mm.recent.slice(0, 8),
+          fills: d.mm.fills, leader: d.id === leader?.id, enabled: !d.off, recent: d.mm.recent.slice(0, 8),
         };
       }),
       live: {

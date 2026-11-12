@@ -99,7 +99,7 @@ function renderView() {
     `<table><thead><tr><th>Mesure</th><th class="num">médiane</th><th class="num">95 %</th><th class="num">max</th></tr></thead><tbody>${Object.entries(lat).map(([k, s]) => `<tr><td>${esc(names[k] || k)}</td><td class="num">${s.p50} ms</td><td class="num">${s.p95} ms</td><td class="num">${s.max} ms</td></tr>`).join('')}</tbody></table>`;
   $('evolve').textContent = `${v.settledWindows} marchés réglés · prochaine évolution dans ${v.nextEvolveIn} marchés`;
   $('desks').className = 'tablewrap';
-  $('desks').innerHTML = `<table><thead><tr><th>Bureau</th><th>Achète entre</th><th class="num">Gain min.</th><th class="num">Stop</th><th class="num">Stock max</th><th>Cote de</th><th class="num">Marchés</th><th class="num">Moyenne / marché</th><th class="num">± incertitude</th><th class="num">Total</th></tr></thead><tbody>${v.desks.map((d) => `<tr><td>${esc(d.id)} ${d.leader ? '<span class="badge good">En tête</span>' : ''}</td><td>${Math.round(d.genes.minPrice * 100)}–${Math.round(d.genes.maxPrice * 100)}¢</td><td class="num">${Math.round(d.genes.minGain * 100)} %</td><td class="num">${d.genes.stopLoss ? '−' + Math.round(d.genes.stopLoss * 100) + ' %' : 'aucun'}</td><td class="num">${d.genes.maxStock}</td><td>${d.genes.startAt}–${d.genes.stopAt} s</td><td class="num">${d.markets}</td><td class="num ${cls(d.perMarket || 0)}">${d.perMarket === null ? '—' : signed(d.perMarket)}</td><td class="num">${d.se === null ? '—' : '± ' + usd(d.se)}</td><td class="num ${cls(d.total)}">${signed(d.total)}</td></tr>`).join('')}</tbody></table>`;
+  $('desks').innerHTML = `<table><thead><tr><th>Bureau</th><th>Achète entre</th><th class="num">Gain min.</th><th class="num">Stop</th><th class="num">Stock max</th><th>Cote de</th><th class="num">Marchés</th><th class="num">Moyenne / marché</th><th class="num">± incertitude</th><th class="num">Total</th><th>Actif</th></tr></thead><tbody>${v.desks.map((d) => `<tr${d.enabled ? '' : ' class="muted"'}><td>${esc(d.id)} ${d.leader ? '<span class="badge good">En tête</span>' : ''}${d.enabled ? '' : ' <span class="badge bad">Désactivé</span>'}</td><td>${Math.round(d.genes.minPrice * 100)}–${Math.round(d.genes.maxPrice * 100)}¢</td><td class="num">${Math.round(d.genes.minGain * 100)} %</td><td class="num">${d.genes.stopLoss ? '−' + Math.round(d.genes.stopLoss * 100) + ' %' : 'aucun'}</td><td class="num">${d.genes.maxStock}</td><td>${d.genes.startAt}–${d.genes.stopAt} s</td><td class="num">${d.markets}</td><td class="num ${cls(d.perMarket || 0)}">${d.perMarket === null ? '—' : signed(d.perMarket)}</td><td class="num">${d.se === null ? '—' : '± ' + usd(d.se)}</td><td class="num ${cls(d.total)}">${signed(d.total)}</td><td><button data-desk="${esc(d.id)}" data-on="${d.enabled ? '0' : '1'}">${d.enabled ? 'Désactiver' : 'Activer'}</button></td></tr>`).join('')}</tbody></table>`;
   const L = v.live, open = L.gate.every((g) => g.ok);
   $('liveBadge').textContent = open ? 'Actif : ordres réels' : 'Bloqué : aucun ordre réel';
   $('liveBadge').className = 'badge ' + (open ? 'good' : 'warn');
@@ -121,6 +121,15 @@ function renderView() {
   $('recent').innerHTML = v.recent.map((r) => `<span class="badge ${r.outcome === 'up' ? 'good' : r.outcome === 'down' ? 'bad' : ''}">${time(r.start).slice(0, 5)} ${r.outcome === 'up' ? '▲' : r.outcome === 'down' ? '▼' : '—'}</span>`).join('') || '<span class="muted">Aucun.</span>';
   $('log').innerHTML = v.log.map((l) => `<div><span class="muted">${time(l.t)}</span> · ${esc(l.msg)}</div>`).join('');
 }
+$('desks').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-desk]');
+  if (!b) return;
+  b.disabled = true;
+  const r = await fetch('/api/control', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: JSON.stringify({ action: 'desk', desk: b.dataset.desk, on: b.dataset.on === '1' }) });
+  if (!r.ok) { alert((await r.json()).error || 'Erreur'); b.disabled = false; return; }
+  const v2 = await fetch('/api/view', { headers: { authorization: 'Bearer ' + token } });
+  if (v2.ok) { view = await v2.json(); renderView(); }
+});
 if (token) connect();
 </script>
 </body>
