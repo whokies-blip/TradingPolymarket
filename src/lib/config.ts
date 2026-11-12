@@ -68,6 +68,8 @@ export const config = () => ({
   /** Re-post an order as soon as it is fully filled instead of waiting for the next candle.
    *  (On 4 days of history this filled more and lost more: −7.5 $ vs −5.8 $ per BTC market.) */
   mmRefill: bool('MM_REFILL', true),
+  /** Settled market windows between two desk evolutions (24 ≈ one hour: BTC and ETH each settle every 5 minutes). */
+  mmEvolveEvery: num('MM_EVOLVE_EVERY_WINDOWS', 24),
   mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
   mmRebate: num('MM_REBATE', 0.2),
   // --- auth

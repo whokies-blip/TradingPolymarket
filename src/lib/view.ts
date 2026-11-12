@@ -2,6 +2,7 @@ import { config } from './config';
 import { computeGate, recentDemoRoi } from './engine';
 import { liveConfigured } from './live';
 import type { Store } from './store';
+import { deskLeader } from './mm';
 import { FAMILY_LABEL, describe, score } from './strategies';
 import type { State } from './types';
 
@@ -40,7 +41,20 @@ export function publicView(state: State, store: Store) {
     gate: computeGate(state, cfg, now),
     log: state.log.slice(0, 60),
     tape: (state.tape ?? []).slice(0, 240),
-    mm: { ...state.mm, recent: state.mm.recent.slice(0, 20), stockUp: Object.values(state.mm.books).reduce((n, b) => n + Math.max(0, b.net), 0), stockDown: Object.values(state.mm.books).reduce((n, b) => n + Math.max(0, -b.net), 0), enabled: cfg.mmEnabled, refill: cfg.mmRefill, maxStock: cfg.mmMaxStock, size: cfg.mmSize, seconds: cfg.mmSeconds, rebate: cfg.mmRebate },
+    ...(() => {
+      const leader = deskLeader(state.desks) ?? state.desks[0];
+      const m = leader.mm;
+      return {
+        mm: { ...m, recent: m.recent.slice(0, 20), stockUp: Object.values(m.books).reduce((n, b) => n + Math.max(0, b.net), 0), stockDown: Object.values(m.books).reduce((n, b) => n + Math.max(0, -b.net), 0),
+          leader: leader.id, genes: leader.genes, enabled: cfg.mmEnabled, refill: cfg.mmRefill, maxStock: cfg.mmMaxStock, size: cfg.mmSize, seconds: cfg.mmSeconds, rebate: cfg.mmRebate },
+        desks: state.desks.map((d) => {
+          const sc = score(d.stats);
+          return { id: d.id, gen: d.gen, parent: d.parent ?? null, genes: d.genes, markets: d.stats.n, perMarket: d.stats.n ? d.stats.sum / d.stats.n : null, tstat: d.stats.n >= 2 ? fin(sc.tstat) : null,
+            total: d.mm.pnl + d.mm.rewards, rewards: d.mm.rewards, fills: d.mm.fills, volume: d.mm.volume, leader: d.id === leader.id };
+        }).sort((a, b) => Number(b.leader) - Number(a.leader) || (b.perMarket ?? -99) - (a.perMarket ?? -99)),
+        nextDeskEvolveIn: Math.max(0, cfg.mmEvolveEvery - (state.settledWindows - state.desksEvolvedAt)),
+      };
+    })(),
     recent: state.recent.slice(0, 40),
     settings: {
       liveTrading: cfg.liveTrading, liveConfigured: liveConfigured(cfg), liveStakeUsd: cfg.liveStakeUsd, liveMaxDailyLoss: cfg.liveMaxDailyLoss,

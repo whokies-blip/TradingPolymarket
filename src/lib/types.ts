@@ -194,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 6;
+  version: 7;
   createdAt: number;
   updatedAt: number;
   tickCount: number;
@@ -214,8 +214,10 @@ export interface State {
   gate: GateCheck[];
   geo?: { t: number; blocked: boolean; country: string };
   log: LogEntry[];
-  /** Paper market-making desk. */
-  mm: MmState;
+  /** Paper market-making desks, each with its own settings; the weakest are replaced over time. */
+  desks: MmDesk[];
+  /** settledWindows at the last desk evolution. */
+  desksEvolvedAt: number;
   /** Latest filled paper orders of all strategies, newest first. */
   tape: TapeEntry[];
   recent: { key: string; asset: Asset; start: number; outcome: Side | 'void'; shadows: number }[];
@@ -275,8 +277,30 @@ export interface MmState {
   volume: number;
   markets: number;
   /** Open inventory per market: net Up shares (negative = short Up, i.e. long Down) and cash spent/received. */
-  books: Record<string, { net: number; cash: number }>;
+  books: Record<string, { net: number; cash: number; avg?: number; rew?: number }>;
   recent: MmFill[];
   /** [time, trading result + rewards] after each settled market. */
   equity: [number, number][];
+}
+
+/** Settings of one market-making desk. */
+export interface MmGenes {
+  /** New stock only when the bet costs between these prices. */
+  minPrice: number;
+  maxPrice: number;
+  /** Stock only sold this far above its average cost. */
+  minGain: number;
+  /** Quotes are moved away from the best prices by this many times the recent 5-second move of the price. */
+  widen: number;
+}
+
+export interface MmDesk {
+  id: string;
+  gen: number;
+  parent?: string;
+  genes: MmGenes;
+  mm: MmState;
+  /** One record per settled market (trading + rewards of that market, 0 when nothing was filled). */
+  stats: Stats;
+  bornAt: number;
 }

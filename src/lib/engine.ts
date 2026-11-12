@@ -1,7 +1,7 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy, placeLiveSell } from './live';
 import { mulberry32, round } from './math';
-import { capSizes, newMm, onTrade, quoteSizes, settleMm, type Quotes } from './mm';
+import { capSizes, deskLeader, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, type Quotes } from './mm';
 import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
 import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, simulateSell, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
@@ -18,7 +18,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = [...seedGenomes(), ...openGenomes()].map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 6,
+    version: 7,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -35,7 +35,8 @@ export function initState(cfg: Config, now = nowSec()): State {
     snapshots: {},
     gate: [],
     log: [{ t: now, level: 'info', msg: `Système initialisé : ${strategies.length} stratégies en observation.` }],
-    mm: newMm(),
+    desks: seedDesks(now),
+    desksEvolvedAt: 0,
     tape: [],
     recent: [],
   };
@@ -43,18 +44,22 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 6) return state;
-  if (state && (state.version as number) === 5) {
-    state.mm = newMm(); // the market-making desk starts empty; everything else is kept
-    state.version = 6;
+  if (state && state.version === 7) return state;
+  if (state && ((state.version as number) === 6 || (state.version as number) === 5)) {
+    // Market making now runs several self-improving desks; strategies and their statistics are kept.
+    delete (state as unknown as { mm?: unknown }).mm;
+    state.desks = seedDesks(nowSec());
+    state.desksEvolvedAt = state.settledWindows;
+    state.version = 7;
     return state;
   }
   if (state && (state.version as number) === 4) {
     // Add the "head start" strategies next to the existing ones, keeping everything learned so far.
     const now = nowSec();
     openGenomes().forEach((genes, i) => state.strategies.push({ id: `o-${i}`, gen: state.generation, genes, stats: emptyStats(), bornAt: now, bornWindow: state.settledWindows }));
-    state.mm = newMm();
-    state.version = 6;
+    state.desks = seedDesks(now);
+    state.desksEvolvedAt = state.settledWindows;
+    state.version = 7;
     log(state, 'evolve', 'Nouvelle famille ajoutée : « départ en avance d’ETH » (6 réglages).', now);
     return state;
   }
@@ -401,7 +406,9 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   for (const acct of [state.demo, state.live]) {
     for (const t of acct.trades) if (t.windowStart === win.start && t.asset === win.asset) settleTrade(acct, t, outcome, now);
   }
-  settleMm(state.mm, win.key, outcome, now);
+  // Every desk gets one result per market (0 if nothing was filled), so they are compared fairly.
+  if (outcome !== 'void') for (const d of state.desks) record(d.stats, settleMm(d.mm, win.key, outcome, now), 1, cfg.ewDecay);
+  else for (const d of state.desks) settleMm(d.mm, win.key, outcome, now);
   for (const entry of state.tape) {
     if (entry.key !== win.key || entry.result) continue;
     entry.result = outcome === 'void' ? 'void' : entry.side === outcome ? 'won' : 'lost';
@@ -437,6 +444,12 @@ export function improve(state: State, cfg: Config, now = nowSec()) {
   if (state.championId !== prev) {
     const c = state.strategies.find((s) => s.id === state.championId);
     log(state, 'evolve', c ? `Nouveau champion : ${c.id} (${FAMILY_LABEL[c.genes.family]}), ${(score(c.stats).mean * 100).toFixed(1)}¢ gagnés par part sur ${c.stats.n} trades (t = ${score(c.stats).tstat.toFixed(1)}).` : 'Plus aucun champion : aucune stratégie n’a un avantage prouvé, le système reste à l’écart.', now);
+  }
+  // Market-making desks: about once an hour, the worst desk is replaced by a variant of the leader.
+  if (state.settledWindows - state.desksEvolvedAt >= cfg.mmEvolveEvery) {
+    state.desksEvolvedAt = state.settledWindows;
+    const res = evolveDesks(state.desks, state.generation + state.settledWindows, mulberry32(Math.floor(now) + 7), now);
+    if (res) log(state, 'evolve', `Tenue de marché : ${res.removed.id} remplacé par ${res.added.id}, variante de ${res.added.parent}.`, now);
   }
   if (state.settledWindows - state.lastEvolveAt >= cfg.evolveEvery) {
     state.lastEvolveAt = state.settledWindows;
@@ -500,7 +513,15 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   let sentHistory = false;
 
   // Market-making desk: its resting quotes per asset, renewed at each candle close.
-  const desk: Partial<Record<Asset, Quotes>> = {};
+  const deskQuotes = new Map<string, Partial<Record<Asset, Quotes>>>();
+  const quotesOf = (id: string) => {
+    let q = deskQuotes.get(id);
+    if (!q) deskQuotes.set(id, (q = {}));
+    return q;
+  };
+  // Last 30 one-second samples of each market's Up price, to measure how agitated it is.
+  const mids: Record<Asset, number[]> = { btc: [], eth: [] };
+  let midSecond = 0;
   let lastCandle = 0;
   let lead10: number | null = null;
   const evalAsset = (asset: Asset, now: number, start: number, feed: BookFeed) => {
@@ -597,33 +618,51 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           if (c.win.start !== start || c.win.outcome) continue;
           applyFills(state, cfg, c.win, [c.p], feed.asks(c.win.upToken), feed.asks(c.win.downToken), nowSec(), feed.best(c.win.upToken).bid, feed.best(c.win.downToken).bid);
         }
-        // Market making: first let the trades that just happened fill our resting quotes…
+        // Market making, for every desk: first let the trades that just happened fill its resting quotes…
         if (cfg.mmEnabled) {
-          for (const tr of feed.drainTrades()) {
+          const secNow = Math.floor(now);
+          if (secNow !== midSecond) {
+            midSecond = secNow;
             for (const a of ASSETS) {
-              const q = desk[a];
-              const w = q ? state.windows[q.key] : undefined;
-              if (!q || !w || w.start !== start) continue;
-              if (tr.token === w.upToken) onTrade(state.mm, cfg, q, w, tr.price, tr.size, !tr.takerBuy, now);
-              // Buying Down from a taker is the same trade as selling Up at the complementary price.
-              else if (tr.token === w.downToken) onTrade(state.mm, cfg, q, w, 1 - tr.price, tr.size, tr.takerBuy, now);
+              const w = state.windows[`${a}-${start}`];
+              const top = w ? feed.best(w.upToken) : null;
+              if (top?.ask != null && top.bid != null) mids[a].push((top.ask + top.bid) / 2);
+              if (mids[a].length > 31) mids[a].splice(0, mids[a].length - 31);
             }
           }
-          // …then re-post at once any order that was completely filled, at the current best price
-          // and within the inventory cap…
+          const trades = feed.drainTrades();
+          for (const d of state.desks) {
+            const dq = quotesOf(d.id);
+            for (const tr of trades) {
+              for (const a of ASSETS) {
+                const q = dq[a];
+                const w = q ? state.windows[q.key] : undefined;
+                if (!q || !w || w.start !== start) continue;
+                if (tr.token === w.upToken) onTrade(d.mm, cfg, q, w, tr.price, tr.size, !tr.takerBuy, now);
+                // Buying Down from a taker is the same trade as selling Up at the complementary price.
+                else if (tr.token === w.downToken) onTrade(d.mm, cfg, q, w, 1 - tr.price, tr.size, tr.takerBuy, now);
+              }
+            }
+          }
+          // …then re-post at once any order that was completely filled, within the cap and the desk's rules…
           if (cfg.mmRefill) {
-            for (const a of ASSETS) {
-              const q = desk[a];
-              const w = q ? state.windows[q.key] : undefined;
-              if (!q || !w || w.start !== start || now - start > cfg.lastEntry) continue;
-              const top = feed.best(w.upToken);
-              if (top.ask === null || top.bid === null || top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
-              const room = capSizes(q.sizes, state.mm.books[w.key]?.net ?? 0, cfg.mmMaxStock);
-              if (q.bid && q.bid.left <= 0 && room.bid > 0) q.bid = { price: top.bid, left: room.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) };
-              if (q.ask && q.ask.left <= 0 && room.ask > 0) q.ask = { price: top.ask, left: room.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) };
+            for (const d of state.desks) {
+              const dq = quotesOf(d.id);
+              for (const a of ASSETS) {
+                const q = dq[a];
+                const w = q ? state.windows[q.key] : undefined;
+                if (!q || !w || w.start !== start || now - start > cfg.lastEntry) continue;
+                const top = feed.best(w.upToken);
+                if (top.ask === null || top.bid === null || top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
+                const book = d.mm.books[w.key];
+                const room = capSizes(q.sizes, book?.net ?? 0, cfg.mmMaxStock);
+                const px = deskPrices({ bid: top.bid, ask: top.ask }, book, d.genes, recentMove(mids[a], cfg.mmSeconds));
+                if (q.bid && q.bid.left <= 0 && room.bid > 0 && px.bidAllowed) q.bid = { price: px.bid, left: room.bid, queue: feed.sizeAt(w.upToken, 'bid', px.bid) };
+                if (q.ask && q.ask.left <= 0 && room.ask > 0 && px.askAllowed) q.ask = { price: px.ask, left: room.ask, queue: feed.sizeAt(w.upToken, 'ask', px.ask) };
+              }
             }
           }
-          // …and, at each candle close, cancel and re-quote both sides at the best prices.
+          // …and, at each candle close, cancel and re-quote both sides.
           const candle = Math.floor(now / cfg.mmSeconds);
           if (candle !== lastCandle) {
             lastCandle = candle;
@@ -633,16 +672,23 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
               const open = priceAt(series[a], now - cfg.mmSeconds);
               const close = spot.last[a];
               const top = w ? feed.best(w.upToken) : null;
-              desk[a] = undefined;
-              if (!w || !top || top.ask === null || top.bid === null || !open || !close || el < 10 || el > cfg.lastEntry) continue;
-              if (top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
-              const size = quoteSizes(open, close, cfg.mmSize);
-              const capped = capSizes(size, state.mm.books[w.key]?.net ?? 0, cfg.mmMaxStock);
-              desk[a] = {
-                key: w.key, asset: a, candle: size.candle, sizes: { bid: size.bid, ask: size.ask },
-                bid: { price: top.bid, left: capped.bid, queue: feed.sizeAt(w.upToken, 'bid', top.bid) },
-                ask: { price: top.ask, left: capped.ask, queue: feed.sizeAt(w.upToken, 'ask', top.ask) },
-              };
+              const usable = !!w && !!top && top.ask !== null && top.bid !== null && !!open && !!close && el >= 10 && el <= cfg.lastEntry
+                && top.ask - top.bid <= 0.05 && top.bid >= 0.05 && top.ask <= 0.95;
+              const size = usable ? quoteSizes(open!, close!, cfg.mmSize) : null;
+              const vol = recentMove(mids[a], cfg.mmSeconds);
+              for (const d of state.desks) {
+                const dq = quotesOf(d.id);
+                dq[a] = undefined;
+                if (!usable || !size) continue;
+                const book = d.mm.books[w!.key];
+                const capped = capSizes(size, book?.net ?? 0, cfg.mmMaxStock);
+                const px = deskPrices({ bid: top!.bid!, ask: top!.ask! }, book, d.genes, vol);
+                dq[a] = {
+                  key: w!.key, asset: a, candle: size.candle, sizes: { bid: size.bid, ask: size.ask },
+                  bid: { price: px.bid, left: px.bidAllowed ? capped.bid : 0, queue: feed.sizeAt(w!.upToken, 'bid', px.bid) },
+                  ask: { price: px.ask, left: px.askAllowed ? capped.ask : 0, queue: feed.sizeAt(w!.upToken, 'ask', px.ask) },
+                };
+              }
             }
           }
         }

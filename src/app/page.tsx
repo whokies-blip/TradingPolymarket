@@ -510,14 +510,24 @@ export default function Page() {
 
       {v.mm?.enabled && (
         <section className="card">
-          <h2>Tenue de marché (simulation)</h2>
-          <p className="sub">Le système place en permanence deux ordres d’achat, l’un sur « Hausse » et l’autre sur « Baisse », aux meilleurs prix de chaque carnet, sur BTC et ETH, renouvelés toutes les {v.mm.seconds} secondes. Après une bougie verte il demande {2 * v.mm.size} parts de Hausse et {v.mm.size} de Baisse ; après une bougie rouge, {v.mm.size} de Hausse et {2 * v.mm.size} de Baisse. Le stock est plafonné à {v.mm.maxStock} parts par côté et par marché : au plafond, le système ne demande plus que l’autre côté. {v.mm.refill ? 'Un ordre entièrement exécuté est reposé aussitôt, sans attendre la bougie suivante. ' : ''}Un ordre n’est compté exécuté que si une vraie transaction le traverse, ou l’atteint après les ordres qui étaient devant lui. Aucun frais sur ces ordres ; {Math.round(v.mm.rebate * 100)} % des frais payés par la contrepartie alimentent le compte de récompenses.</p>
+          <div className="row between"><h2>Tenue de marché (simulation)</h2><span className="sub">prochain remplacement dans {v.nextDeskEvolveIn} marchés</span></div>
+          <p className="sub">{v.desks.length} bureaux tournent en parallèle sur les mêmes transactions réelles, chacun avec ses réglages. Tous placent en permanence un ordre d’achat de « Hausse » et un de « Baisse » sur BTC et ETH, renouvelés toutes les {v.mm.seconds} secondes : après une bougie verte ils demandent {2 * v.mm.size} parts de Hausse et {v.mm.size} de Baisse, l’inverse après une rouge. Chaque bureau a sa bande de prix d’achat, son gain minimum pour revendre son stock, et son écart aux meilleurs prix, qui s’élargit quand le marché s’agite. Environ toutes les heures, le moins bon est remplacé par une variante du meilleur. Stock plafonné à {v.mm.maxStock} parts par côté ; aucun frais sur ces ordres ; {Math.round(v.mm.rebate * 100)} % des frais payés par la contrepartie vont au compte de récompenses. Les chiffres ci-dessous sont ceux du bureau en tête, <b>{v.mm.leader}</b>.</p>
           <div className="grid g4" style={{ marginTop: 10 }}>
             <Tile label="Résultat du trading" value={signed(v.mm.pnl)} tone={cls(v.mm.pnl)} hint={`${v.mm.markets} marchés réglés`} />
             <Tile label="Compte de récompenses (pUSD)" value={usd(v.mm.rewards)} tone="pos" hint={`${Math.round(v.mm.rebate * 100)} % des frais des contreparties`} />
             <Tile label="Total" value={signed(v.mm.pnl + v.mm.rewards)} tone={cls(v.mm.pnl + v.mm.rewards)} hint="trading + récompenses" />
             <Tile label="Ordres exécutés" value={String(v.mm.fills)} hint={`en stock : ${Math.round(v.mm.stockUp)} Hausse · ${Math.round(v.mm.stockDown)} Baisse`} />
           </div>
+          <div className="tablewrap" style={{ marginTop: 10 }}><table>
+            <thead><tr><th>Bureau</th><th>Achète entre</th><th className="num">Gain min.</th><th className="num">Écart (× agitation)</th><th className="num">Marchés</th><th className="num">Moyenne par marché</th><th className="num">Total</th><th className="num">dont récompenses</th><th className="num">Exécutions</th></tr></thead>
+            <tbody>{v.desks.map((d) => (
+              <tr key={d.id}>
+                <td>{d.id} {d.leader && <span className="badge good">En tête</span>}{d.parent && <div className="muted">issu de {d.parent}</div>}</td>
+                <td>{Math.round(d.genes.minPrice * 100)}–{Math.round(d.genes.maxPrice * 100)}¢</td><td className="num">{Math.round(d.genes.minGain * 100)} %</td><td className="num">{d.genes.widen.toFixed(1).replace('.', ',')}</td>
+                <td className="num">{d.markets}</td><td className={`num ${cls(d.perMarket ?? 0)}`}>{d.perMarket === null ? '—' : signed(d.perMarket)}</td>
+                <td className={`num ${cls(d.total)}`}>{signed(d.total)}</td><td className="num">{usd(d.rewards)}</td><td className="num">{d.fills}</td>
+              </tr>))}</tbody>
+          </table></div>
           {v.mm.recent.length > 0 && (
             <div className="tablewrap" style={{ marginTop: 10 }}><table>
               <thead><tr><th>Heure</th><th>Marché</th><th>Bougie</th><th>Exécution</th><th className="num">Parts</th><th className="num">Prix</th><th className="num">Récompense</th></tr></thead>
