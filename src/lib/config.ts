@@ -60,6 +60,8 @@ export const config = () => ({
   liveMinTrades: num('LIVE_MIN_TRADES', 150),
   liveMinTstat: num('LIVE_MIN_TSTAT', 3),
   liveMaxSlippage: num('LIVE_MAX_SLIPPAGE', 0.02),
+  /** The ETH directional strategies (lag, head start). Off: only market making runs. */
+  strategies: bool('STRATEGIES', false),
   // --- paper market making
   mmEnabled: bool('MM_ENABLED', true),
   mmSize: num('MM_SIZE', 10),

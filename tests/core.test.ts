@@ -1,3 +1,5 @@
+// These tests cover the directional strategies, which are off by default.
+process.env.STRATEGIES = 'true';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { config } from '../src/lib/config';

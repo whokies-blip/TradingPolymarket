@@ -391,15 +391,17 @@ export default function Page() {
       <div className="row between">
         <div>
           <h1>Polymarket 5 min — BTC &amp; ETH</h1>
-          <div className="sub">Stratégie : retard d’ETH sur BTC · génération {v.generation} · {v.settledWindows} marchés analysés</div>
+          <div className="sub">{v.settings.strategies ? 'Stratégies ETH + tenue de marché' : 'Tenue de marché (simulation)'} · {v.settledWindows} marchés analysés</div>
         </div>
         <div className="row">
           <span className={`badge ${engine === 'live' ? 'good' : stale ? 'bad' : 'good'}`}>{engine === 'live' ? 'Moteur actif · temps réel' : stale ? `Moteur inactif depuis ${Math.round((clock - v.updatedAt) / 60)} min` : `Moteur actif · ${time(v.updatedAt)}`}</span>
-          <button className="btn" onClick={() => control('resetAll', 'Remettre toutes les statistiques à zéro (stratégies, signaux, compte démo, tenue de marché) ?')}>Tout remettre à zéro</button>
-          <div className="tabs" role="tablist">
+          <button className="btn" onClick={() => control('resetAll', 'Remettre toutes les statistiques à zéro ?')}>Tout remettre à zéro</button>
+          {v.settings.strategies && (
+            <div className="tabs" role="tablist">
             <button role="tab" aria-selected={mode === 'demo'} onClick={() => setMode('demo')}>Démo</button>
             <button role="tab" aria-selected={mode === 'live'} onClick={() => setMode('live')}>Production</button>
           </div>
+          )}
         </div>
       </div>
       {!v.settings.managed && (
@@ -459,6 +461,7 @@ export default function Page() {
         })}
       </section>}
 
+{v.settings.strategies && (<>
       {mode === 'live' && (
         <section className="grid g2">
           <div className="card">
@@ -507,6 +510,8 @@ export default function Page() {
           {mode === 'demo' && <button className="btn" onClick={() => control('resetDemo', 'Remettre le compte démo à zéro ?')}>Remettre à zéro</button>}</div>
         <Trades trades={acct.trades} />
       </section>
+
+</>)}
 
       {v.mm?.enabled && (
         <section className="card">
@@ -564,6 +569,7 @@ export default function Page() {
         </section>
       )}
 
+{v.settings.strategies && (<>
       <section className="card">
         <h2>Derniers signaux</h2>
         {signals.length === 0 ? <p className="muted">Aucun pour l’instant : le moteur attend qu’ETH soit en retard ou parte avec de l’avance.</p> : (<>
@@ -615,8 +621,11 @@ export default function Page() {
         </div>
       </section>
 
+</>)}
+
       <section className="grid g2">
         <div className="card">
+          {v.settings.strategies && (<>
           <h2>Qualité des prévisions</h2>
           <p className="sub">Erreur moyenne de chaque prévision sur les ~500 dernières mesures (plus bas = meilleur ; 0,693 = pile ou face). Pour gagner, il faut faire nettement mieux que le marché, frais compris.</p>
           <div className="tablewrap"><table>
@@ -624,7 +633,8 @@ export default function Page() {
             <tbody>{(['btc', 'eth'] as const).map((a) => { const m = v.models[a]; return (
               <tr key={a}><td>{a.toUpperCase()}</td><td className="num">{m.llMarket.toFixed(3)}</td><td className="num">{m.llFair.toFixed(3)}</td><td className="num">{m.llModel.toFixed(3)}</td><td className="num">{m.n}</td></tr>); })}</tbody>
           </table></div>
-          <h2 style={{ marginTop: 16 }}>Derniers marchés</h2>
+          </>)}
+          <h2 style={{ marginTop: v.settings.strategies ? 16 : 0 }}>Derniers marchés</h2>
           <div className="row" style={{ gap: 6 }}>{v.recent.slice(0, 24).map((r) => (
             <span key={r.key} className={`badge ${r.outcome === 'up' ? 'good' : r.outcome === 'down' ? 'bad' : ''}`} title={`${time(r.start)} · ${r.shadows} stratégie(s) ont parié`}>{r.asset.toUpperCase()} {r.outcome === 'up' ? '▲ hausse' : r.outcome === 'down' ? '▼ baisse' : 'annulé'}</span>))}
             {!v.recent.length && <span className="muted">Aucun marché réglé pour l’instant.</span>}</div>

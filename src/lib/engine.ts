@@ -16,9 +16,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, bankroll, trades: [], equity: [], nSettled: 0, nWins: 0, fees: 0, staked: 0, pnl: 0 });
 
 export function initState(cfg: Config, now = nowSec()): State {
-  const strategies: Strategy[] = [...seedGenomes(), ...openGenomes()].map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
+  const strategies: Strategy[] = (cfg.strategies ? [...seedGenomes(), ...openGenomes()] : []).map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 8,
+    version: 9,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -34,7 +34,7 @@ export function initState(cfg: Config, now = nowSec()): State {
     control: { killSwitch: false, liveArmed: false },
     snapshots: {},
     gate: [],
-    log: [{ t: now, level: 'info', msg: `Système initialisé : ${strategies.length} stratégies en observation.` }],
+    log: [{ t: now, level: 'info', msg: cfg.strategies ? `Système initialisé : ${strategies.length} stratégies en observation.` : 'Système initialisé : tenue de marché uniquement.' }],
     desks: seedDesks(now),
     desksEvolvedAt: 0,
     tape: [],
@@ -44,14 +44,25 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 8) return state;
+  if (state && state.version === 9) return state;
+  if (state && (state.version as number) === 8) {
+    // Market making only: the directional strategies are removed; the desks keep everything they learned.
+    if (!cfg.strategies) {
+      state.strategies = [];
+      state.championId = null;
+      state.tape = [];
+      log(state, 'info', 'Stratégies directionnelles retirées : tenue de marché uniquement.');
+    }
+    state.version = 9;
+    return state;
+  }
   if (state && ((state.version as number) === 7 || (state.version as number) === 6 || (state.version as number) === 5)) {
     // Market making now runs several self-improving desks; strategies and their statistics are kept.
     delete (state as unknown as { mm?: unknown }).mm;
     state.desks = seedDesks(nowSec());
     state.desksEvolvedAt = state.settledWindows;
-    state.version = 8;
-    return state;
+    (state as unknown as { version: number }).version = 8;
+    return migrate(state, cfg);
   }
   if (state && (state.version as number) === 4) {
     // Add the "head start" strategies next to the existing ones, keeping everything learned so far.
@@ -59,9 +70,9 @@ export function migrate(state: State | null, cfg: Config): State {
     openGenomes().forEach((genes, i) => state.strategies.push({ id: `o-${i}`, gen: state.generation, genes, stats: emptyStats(), bornAt: now, bornWindow: state.settledWindows }));
     state.desks = seedDesks(now);
     state.desksEvolvedAt = state.settledWindows;
-    state.version = 8;
+    (state as unknown as { version: number }).version = 8;
     log(state, 'evolve', 'Nouvelle famille ajoutée : « départ en avance d’ETH » (6 réglages).', now);
-    return state;
+    return migrate(state, cfg);
   }
   const fresh = initState(cfg);
   if (state?.control) fresh.control = { killSwitch: !!state.control.killSwitch, liveArmed: false };
@@ -155,7 +166,7 @@ export interface Pending {
 
 /** Which strategies want to trade right now (each at most once per market). */
 export function decide(state: State, cfg: Config, win: WindowRec, f: Features, quote: Quote, qModel: number | null, skip?: (id: string) => boolean): Pending[] {
-  if (f.elapsed > cfg.lastEntry) return [];
+  if (f.elapsed > cfg.lastEntry || !cfg.strategies) return [];
   const traded = new Set(win.shadows.map((s) => s.sid));
   const out: Pending[] = [];
   for (const strat of state.strategies) {

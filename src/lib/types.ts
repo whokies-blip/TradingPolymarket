@@ -194,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 8;
+  version: 9;
   createdAt: number;
   updatedAt: number;
   tickCount: number;
