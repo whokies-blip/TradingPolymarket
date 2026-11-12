@@ -511,7 +511,7 @@ export default function Page() {
       {v.mm?.enabled && (
         <section className="card">
           <div className="row between"><h2>Tenue de marché (simulation)</h2><span className="sub">prochain remplacement dans {v.nextDeskEvolveIn} marchés</span></div>
-          <p className="sub">{v.desks.length} bureaux tournent en parallèle sur les mêmes transactions réelles, chacun avec ses réglages. Tous placent en permanence un ordre d’achat de « Hausse » et un de « Baisse » sur BTC et ETH, renouvelés toutes les {v.mm.seconds} secondes : après une bougie verte ils demandent {2 * v.mm.size} parts de Hausse et {v.mm.size} de Baisse, l’inverse après une rouge. Chaque bureau a sa bande de prix d’achat, son gain minimum pour revendre son stock, et son écart aux meilleurs prix, qui s’élargit quand le marché s’agite. Environ toutes les heures, le moins bon est remplacé par une variante du meilleur. Stock plafonné à {v.mm.maxStock} parts par côté ; aucun frais sur ces ordres ; {Math.round(v.mm.rebate * 100)} % des frais payés par la contrepartie vont au compte de récompenses. Les chiffres ci-dessous sont ceux du bureau en tête, <b>{v.mm.leader}</b>.</p>
+          <p className="sub">{v.desks.length} bureaux tournent en parallèle sur les mêmes transactions réelles, chacun avec ses réglages. Tous placent en permanence un ordre d’achat de « Hausse » et un de « Baisse » sur BTC (ETH perdait avec tous les réglages testés), renouvelés toutes les {v.mm.seconds} secondes : après une bougie verte ils demandent {2 * v.mm.size} parts de Hausse et {v.mm.size} de Baisse, l’inverse après une rouge. Chaque bureau a sa bande de prix d’achat, son gain minimum pour revendre son stock, éventuellement un stop (vente à perte de tout le stock), son stock maximum, ses heures de cotation, et son écart aux meilleurs prix, qui s’élargit quand le marché s’agite. Environ toutes les heures, le moins bon est remplacé par une variante du meilleur. Aucun frais sur ces ordres ; {Math.round(v.mm.rebate * 100)} % des frais payés par la contrepartie vont au compte de récompenses. Les chiffres ci-dessous sont ceux du bureau en tête, <b>{v.mm.leader}</b>.</p>
           <div className="grid g4" style={{ marginTop: 10 }}>
             <Tile label="Résultat du trading" value={signed(v.mm.pnl)} tone={cls(v.mm.pnl)} hint={`${v.mm.markets} marchés réglés`} />
             <Tile label="Compte de récompenses (pUSD)" value={usd(v.mm.rewards)} tone="pos" hint={`${Math.round(v.mm.rebate * 100)} % des frais des contreparties`} />
@@ -544,11 +544,11 @@ export default function Page() {
           })() : <p className="sub">Stock du bureau en tête au dernier enregistrement : {Math.round(v.mm.stockUp)} parts Hausse · {Math.round(v.mm.stockDown)} parts Baisse.</p>}
           <h2 style={{ marginTop: 14 }}>Les bureaux</h2>
           <div className="tablewrap" style={{ marginTop: 10 }}><table>
-            <thead><tr><th>Bureau</th><th>Achète entre</th><th className="num">Gain min.</th><th className="num">Écart (× agitation)</th><th className="num">Marchés</th><th className="num">Moyenne par marché</th><th className="num">Total</th><th className="num">dont récompenses</th><th className="num">Exécutions</th></tr></thead>
+            <thead><tr><th>Bureau</th><th>Achète entre</th><th className="num">Gain min.</th><th className="num">Stop</th><th className="num">Stock max</th><th>Cote de</th><th className="num">Écart (× agitation)</th><th className="num">Marchés</th><th className="num">Moyenne par marché</th><th className="num">Total</th><th className="num">dont récompenses</th><th className="num">Exécutions</th></tr></thead>
             <tbody>{v.desks.map((d) => (
               <tr key={d.id}>
                 <td>{d.id} {d.leader && <span className="badge good">En tête</span>}{d.parent && <div className="muted">issu de {d.parent}</div>}</td>
-                <td>{Math.round(d.genes.minPrice * 100)}–{Math.round(d.genes.maxPrice * 100)}¢</td><td className="num">{Math.round(d.genes.minGain * 100)} %</td><td className="num">{d.genes.widen.toFixed(1).replace('.', ',')}</td>
+                <td>{Math.round(d.genes.minPrice * 100)}–{Math.round(d.genes.maxPrice * 100)}¢</td><td className="num">{Math.round(d.genes.minGain * 100)} %</td><td className="num">{d.genes.stopLoss ? `−${Math.round(d.genes.stopLoss * 100)} %` : 'aucun'}</td><td className="num">{d.genes.maxStock}</td><td>{d.genes.startAt}–{d.genes.stopAt} s</td><td className="num">{d.genes.widen.toFixed(1).replace('.', ',')}</td>
                 <td className="num">{d.markets}</td><td className={`num ${cls(d.perMarket ?? 0)}`}>{d.perMarket === null ? '—' : signed(d.perMarket)}</td>
                 <td className={`num ${cls(d.total)}`}>{signed(d.total)}</td><td className="num">{usd(d.rewards)}</td><td className="num">{d.fills}</td>
               </tr>))}</tbody>
@@ -558,7 +558,7 @@ export default function Page() {
               <thead><tr><th>Heure</th><th>Marché</th><th>Bougie</th><th>Exécution</th><th className="num">Parts</th><th className="num">Prix</th><th className="num">Récompense</th></tr></thead>
               <tbody>{v.mm.recent.map((f, i) => (
                 <tr key={i}><td>{time(f.t)}</td><td>{f.asset.toUpperCase()}</td><td>{f.candle === 'green' ? 'verte' : f.candle === 'red' ? 'rouge' : 'neutre'}</td>
-                  <td><b>{f.side === 'buy' ? 'Achat Hausse ▲' : 'Achat Baisse ▼'}</b></td><td className="num">{f.shares}</td><td className="num">{tick(f.side === 'buy' ? f.price : 1 - f.price)}</td><td className="num">{(f.rebate * 100).toFixed(1)}¢</td></tr>))}</tbody>
+                  <td><b>{f.stop ? <span className="neg">Vente à perte {f.side === 'sell' ? 'Hausse' : 'Baisse'}</span> : f.side === 'buy' ? 'Achat Hausse ▲' : 'Achat Baisse ▼'}</b></td><td className="num">{f.shares}</td><td className="num">{tick(f.stop ? f.price : f.side === 'buy' ? f.price : 1 - f.price)}</td><td className="num">{(f.rebate * 100).toFixed(1)}¢</td></tr>))}</tbody>
             </table></div>
           )}
         </section>

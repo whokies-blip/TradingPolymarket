@@ -194,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 7;
+  version: 8;
   createdAt: number;
   updatedAt: number;
   tickCount: number;
@@ -279,6 +279,8 @@ export interface MmFill {
   /** Colour of the 5-second candle that set the sizes. */
   candle: 'green' | 'red' | 'flat';
   rebate: number;
+  /** Set when the desk sold its whole stock at a loss (stop). */
+  stop?: boolean;
 }
 
 /**
@@ -309,6 +311,13 @@ export interface MmGenes {
   minGain: number;
   /** Quotes are moved away from the best prices by this many times the recent 5-second move of the price. */
   widen: number;
+  /** Most shares held on one side of one market. */
+  maxStock: number;
+  /** Only quote between these seconds of the 5-minute market. */
+  startAt: number;
+  stopAt: number;
+  /** Sell the whole stock at market once the side held is worth this much less than its average cost (0 = never). */
+  stopLoss: number;
 }
 
 export interface MmDesk {

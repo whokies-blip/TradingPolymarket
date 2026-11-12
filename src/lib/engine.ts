@@ -1,7 +1,7 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
 import { liveBalance, liveConfigured, placeLiveBuy, placeLiveSell } from './live';
 import { mulberry32, round } from './math';
-import { capSizes, deskLeader, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, type Quotes } from './mm';
+import { capSizes, deskLeader, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, stopHit, stopOut, type Quotes } from './mm';
 import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
 import { feePerShare, fetchBook, fetchGeoblock, fetchOutcome, fetchWindows, simulateBuy, simulateSell, type Book, type Level } from './polymarket';
 import { BookFeed, SpotFeed } from './feeds';
@@ -18,7 +18,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = [...seedGenomes(), ...openGenomes()].map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 7,
+    version: 8,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -44,13 +44,13 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 7) return state;
-  if (state && ((state.version as number) === 6 || (state.version as number) === 5)) {
+  if (state && state.version === 8) return state;
+  if (state && ((state.version as number) === 7 || (state.version as number) === 6 || (state.version as number) === 5)) {
     // Market making now runs several self-improving desks; strategies and their statistics are kept.
     delete (state as unknown as { mm?: unknown }).mm;
     state.desks = seedDesks(nowSec());
     state.desksEvolvedAt = state.settledWindows;
-    state.version = 7;
+    state.version = 8;
     return state;
   }
   if (state && (state.version as number) === 4) {
@@ -59,7 +59,7 @@ export function migrate(state: State | null, cfg: Config): State {
     openGenomes().forEach((genes, i) => state.strategies.push({ id: `o-${i}`, gen: state.generation, genes, stats: emptyStats(), bornAt: now, bornWindow: state.settledWindows }));
     state.desks = seedDesks(now);
     state.desksEvolvedAt = state.settledWindows;
-    state.version = 7;
+    state.version = 8;
     log(state, 'evolve', 'Nouvelle famille ajoutée : « départ en avance d’ETH » (6 réglages).', now);
     return state;
   }
@@ -648,17 +648,32 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           if (cfg.mmRefill) {
             for (const d of state.desks) {
               const dq = quotesOf(d.id);
-              for (const a of ASSETS) {
+              for (const a of cfg.mmAssets) {
                 const q = dq[a];
                 const w = q ? state.windows[q.key] : undefined;
-                if (!q || !w || w.start !== start || now - start > cfg.lastEntry) continue;
+                if (!q || !w || w.start !== start || now - start < d.genes.startAt || now - start > d.genes.stopAt) continue;
                 const top = feed.best(w.upToken);
                 if (top.ask === null || top.bid === null || top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
                 const book = d.mm.books[w.key];
-                const room = capSizes(q.sizes, book?.net ?? 0, cfg.mmMaxStock);
+                const room = capSizes(q.sizes, book?.net ?? 0, d.genes.maxStock);
                 const px = deskPrices({ bid: top.bid, ask: top.ask }, book, d.genes, recentMove(mids[a], cfg.mmSeconds));
                 if (q.bid && q.bid.left <= 0 && room.bid > 0 && px.bidAllowed) q.bid = { price: px.bid, left: room.bid, queue: feed.sizeAt(w.upToken, 'bid', px.bid) };
                 if (q.ask && q.ask.left <= 0 && room.ask > 0 && px.askAllowed) q.ask = { price: px.ask, left: room.ask, queue: feed.sizeAt(w.upToken, 'ask', px.ask) };
+              }
+            }
+          }
+          // Stops: a desk whose stock has lost `stopLoss` of its cost sells it all at market and stops quoting until the next candle.
+          if (secNow === midSecond) {
+            for (const d of state.desks) {
+              if (!(d.genes.stopLoss > 0)) continue;
+              for (const a of cfg.mmAssets) {
+                const w = state.windows[`${a}-${start}`];
+                const top = w ? feed.best(w.upToken) : null;
+                if (!w || top?.ask == null || top.bid == null) continue;
+                const book = d.mm.books[w.key];
+                if (!stopHit(book, (top.ask + top.bid) / 2, d.genes.stopLoss)) continue;
+                const side = book!.net > 0 ? w.upToken : w.downToken;
+                if (stopOut(d.mm, w.key, a, feed.bids(side), w, quotesOf(d.id)[a]?.candle ?? 'flat', now) !== null) quotesOf(d.id)[a] = undefined;
               }
             }
           }
@@ -666,22 +681,22 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           const candle = Math.floor(now / cfg.mmSeconds);
           if (candle !== lastCandle) {
             lastCandle = candle;
-            for (const a of ASSETS) {
+            for (const a of cfg.mmAssets) {
               const w = state.windows[`${a}-${start}`];
               const el = now - start;
               const open = priceAt(series[a], now - cfg.mmSeconds);
               const close = spot.last[a];
               const top = w ? feed.best(w.upToken) : null;
-              const usable = !!w && !!top && top.ask !== null && top.bid !== null && !!open && !!close && el >= 10 && el <= cfg.lastEntry
+              const usable = !!w && !!top && top.ask !== null && top.bid !== null && !!open && !!close && el >= 10 && el <= 285
                 && top.ask - top.bid <= 0.05 && top.bid >= 0.05 && top.ask <= 0.95;
               const size = usable ? quoteSizes(open!, close!, cfg.mmSize) : null;
               const vol = recentMove(mids[a], cfg.mmSeconds);
               for (const d of state.desks) {
                 const dq = quotesOf(d.id);
                 dq[a] = undefined;
-                if (!usable || !size) continue;
+                if (!usable || !size || el < d.genes.startAt || el > d.genes.stopAt) continue;
                 const book = d.mm.books[w!.key];
-                const capped = capSizes(size, book?.net ?? 0, cfg.mmMaxStock);
+                const capped = capSizes(size, book?.net ?? 0, d.genes.maxStock);
                 const px = deskPrices({ bid: top!.bid!, ask: top!.ask! }, book, d.genes, vol);
                 dq[a] = {
                   key: w!.key, asset: a, candle: size.candle, sizes: { bid: size.bid, ask: size.ask },

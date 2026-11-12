@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { config } from '../src/lib/config';
-import { capSizes, deskLeader, deskPrices, evolveDesks, newMm, recentMove, seedDesks, onTrade, quoteSizes, settleMm, type Quotes } from '../src/lib/mm';
+import { capSizes, deskLeader, deskPrices, evolveDesks, newMm, recentMove, seedDesks, stopHit, stopOut, onTrade, quoteSizes, settleMm, type Quotes } from '../src/lib/mm';
 import { mulberry32 } from '../src/lib/math';
 import { record } from '../src/lib/strategies';
 import type { MmGenes, WindowRec } from '../src/lib/types';
 
-const yours: MmGenes = { minPrice: 0.35, maxPrice: 0.9, minGain: 0.05, widen: 0 };
+const yours: MmGenes = { minPrice: 0.35, maxPrice: 0.9, minGain: 0.05, widen: 0, maxStock: 20, startAt: 10, stopAt: 240, stopLoss: 0 };
 
 const win: WindowRec = { key: 'btc-300', asset: 'btc', start: 300, slug: 's', upToken: 'u', downToken: 'd', feeRate: 0.07, feeExp: 1, tickSize: 0.01, minSize: 5, negRisk: false, shadows: [], obs: [] };
 const quotes = (): Quotes => ({ key: win.key, asset: 'btc', candle: 'green', sizes: { bid: 20, ask: 10 }, bid: { price: 0.5, left: 20, queue: 100 }, ask: { price: 0.51, left: 10, queue: 0 } });
@@ -61,6 +61,23 @@ test('desks: the leader is the best proven one, and the worst is replaced by a v
   assert.equal(res.added.parent, 'd1');
   assert.equal(desks.length, 8);
   assert.ok(desks.every((d) => d.genes.maxPrice >= d.genes.minPrice + 0.2 - 1e-9));
+});
+
+test('stop: sell the whole stock at market once it has lost the set share of its cost', () => {
+  assert.equal(stopHit({ net: 10, avg: 0.6 }, 0.45, 0.3), false); // Up held at 60¢, now 45¢: −25%
+  assert.equal(stopHit({ net: 10, avg: 0.6 }, 0.41, 0.3), true); // −32%
+  assert.equal(stopHit({ net: -10, avg: 0.6 }, 0.6, 0.3), true); // Down held at 60¢, now worth 40¢
+  assert.equal(stopHit({ net: 10, avg: 0.6 }, 0.1, 0), false); // no stop on this desk
+  // Down stock (recorded as short Up): 10 Down bought at 60¢ = sold 10 Up at 40¢ → cash +4
+  const mm = newMm();
+  mm.books[win.key] = { net: -10, cash: 4, avg: 0.6 };
+  const got = stopOut(mm, win.key, 'btc', [{ price: 0.35, size: 100 }], win, 'red', 1)!;
+  const fee = 0.07 * 0.35 * 0.65 * 10;
+  assert.ok(Math.abs(got - (3.5 - fee)) < 1e-9);
+  // Sold the Down for 3.5 − fee after paying 6 for it: a loss of 2.5 + fee, whatever the outcome
+  settleMm(mm, win.key, 'up', 2);
+  assert.ok(Math.abs(mm.pnl - (-2.5 - fee)) < 1e-9);
+  assert.equal(mm.recent[0].stop, true);
 });
 
 test('the average cost follows what is held', () => {

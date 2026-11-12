@@ -1,5 +1,5 @@
 import type { Config } from './config';
-import { feePerShare } from './polymarket';
+import { feePerShare, simulateSell, type Level } from './polymarket';
 import { clamp, round } from './math';
 import { emptyStats, score } from './strategies';
 import type { Asset, MmDesk, MmFill, MmGenes, MmState, Side, WindowRec } from './types';
@@ -79,33 +79,77 @@ export function deskPrices(top: { bid: number; ask: number }, book: { net: numbe
 
 // ---------------------------------------------------------------- self-improving desks
 
-const GENE_BOUNDS: Record<keyof MmGenes, [number, number]> = { minPrice: [0.2, 0.5], maxPrice: [0.7, 0.95], minGain: [0, 0.3], widen: [0, 3] };
+const GENE_BOUNDS: Record<keyof MmGenes, [number, number]> = {
+  minPrice: [0.2, 0.5], maxPrice: [0.7, 0.95], minGain: [0, 0.6], widen: [0, 3], maxStock: [10, 120], startAt: [10, 150], stopAt: [120, 285], stopLoss: [0, 0.6],
+};
 
 function normaliseGenes(g: MmGenes): MmGenes {
   const out = { ...g };
   for (const k of Object.keys(GENE_BOUNDS) as (keyof MmGenes)[]) out[k] = round(clamp(out[k], GENE_BOUNDS[k][0], GENE_BOUNDS[k][1]), 2);
   out.maxPrice = Math.max(out.maxPrice, round(out.minPrice + 0.2, 2));
+  out.maxStock = Math.round(out.maxStock);
+  out.startAt = Math.round(out.startAt);
+  out.stopAt = Math.round(Math.max(out.stopAt, out.startAt + 60));
+  if (out.stopLoss < 0.05) out.stopLoss = 0;
   return out;
 }
 
 /**
- * Starting line-up, from a search over 360 settings on 4 days of history (tuned on the first half,
- * checked on the second). The best BTC settings broke even (≈ 0 $ per market): buy only between
- * 40¢ and 80–85¢, sell stock only 20% above cost, quote 2× the recent move away from the best prices.
- * d0 is the user's own setting (35–90¢, +5%, at the best prices): −2 $ per market on the same data.
+ * Starting line-up, from a random search over 50,000 settings per asset on 4 days of history: searched
+ * on the first half, re-checked on the second, and the survivors tested on 2 later days nothing had seen.
+ * On BTC, 31 of the 47 settings positive on both halves were also positive on the unseen days; the
+ * common pattern is: buy only between 40¢ and 90–95¢, hold up to 80 shares, start quoting after 60 s,
+ * and sell stock only 30–50% above its cost. It earned −0.25 $, +0.08 $ and +2.51 $ per market on the
+ * three periods: not a proven edge. Selling at a loss made things worse in every period (d5, d6 are
+ * there to show it live). On ETH no setting survived, so the desks only trade BTC (MM_ASSETS).
+ * d0 is the user's setting; d7 the best of the earlier, smaller search.
  */
 export function seedDesks(now: number): MmDesk[] {
+  const base = { widen: 0, maxStock: 80, startAt: 60, stopAt: 270, stopLoss: 0 };
   const seeds: MmGenes[] = [
-    { minPrice: 0.35, maxPrice: 0.9, minGain: 0.05, widen: 0 },
-    { minPrice: 0.4, maxPrice: 0.8, minGain: 0.2, widen: 2 },
-    { minPrice: 0.4, maxPrice: 0.85, minGain: 0.2, widen: 2 },
-    { minPrice: 0.4, maxPrice: 0.9, minGain: 0.2, widen: 0 },
-    { minPrice: 0.45, maxPrice: 0.85, minGain: 0.08, widen: 2 },
-    { minPrice: 0.3, maxPrice: 0.85, minGain: 0.12, widen: 1 },
-    { minPrice: 0.4, maxPrice: 0.85, minGain: 0.12, widen: 1 },
-    { minPrice: 0.35, maxPrice: 0.9, minGain: 0.2, widen: 1 },
+    { minPrice: 0.35, maxPrice: 0.9, minGain: 0.05, widen: 0, maxStock: 20, startAt: 10, stopAt: 240, stopLoss: 0 },
+    { ...base, minPrice: 0.4, maxPrice: 0.95, minGain: 0.3 },
+    { ...base, minPrice: 0.4, maxPrice: 0.9, minGain: 0.5, stopAt: 180 },
+    { ...base, minPrice: 0.4, maxPrice: 0.95, minGain: 0.5 },
+    { ...base, minPrice: 0.45, maxPrice: 0.9, minGain: 0.5, startAt: 120, stopAt: 285 },
+    { ...base, minPrice: 0.4, maxPrice: 0.95, minGain: 0.3, stopLoss: 0.5 },
+    { ...base, minPrice: 0.4, maxPrice: 0.95, minGain: 0.3, stopLoss: 0.3 },
+    { minPrice: 0.4, maxPrice: 0.85, minGain: 0.2, widen: 2, maxStock: 20, startAt: 10, stopAt: 240, stopLoss: 0 },
   ];
   return seeds.map((genes, i) => ({ id: `d${i}`, gen: 0, genes: normaliseGenes(genes), mm: newMm(), stats: emptyStats(), bornAt: now }));
+}
+
+/**
+ * Stop: should the desk sell its whole stock now? `upMid` is the market's price of Up. The side held is
+ * valued at the mid; the stop fires when it is worth `stopLoss` less than its average cost.
+ */
+export function stopHit(book: { net: number; avg?: number } | undefined, upMid: number, stopLoss: number): boolean {
+  if (!book || book.net === 0 || !(stopLoss > 0) || !book.avg) return false;
+  const value = book.net > 0 ? upMid : 1 - upMid;
+  return value <= book.avg * (1 - stopLoss);
+}
+
+/**
+ * Sell the whole stock at market into `bids` (the bids of the side held), paying the taker fee and getting
+ * no reward. Returns the cash received, or null if the book cannot absorb it.
+ */
+export function stopOut(mm: MmState, key: string, asset: Asset, bids: Level[], win: WindowRec, candle: MmFill['candle'], now: number): number | null {
+  const book = mm.books[key];
+  if (!book || book.net === 0) return null;
+  const shares = Math.abs(book.net);
+  const sale = simulateSell(bids, shares, win.feeRate, win.feeExp);
+  if (!sale || sale.shares < shares - 0.01) return null;
+  // Up stock: cash comes in. Down stock is recorded as short Up: selling it also releases the 1 per share owed.
+  book.cash += book.net > 0 ? sale.proceeds : sale.proceeds - shares;
+  // For a stop, `side` says which stock was sold ('sell' = Up, 'buy' = Down) and `price` is what it fetched.
+  const side = book.net > 0 ? 'sell' : 'buy';
+  book.net = 0;
+  book.avg = 0;
+  mm.fills++;
+  mm.volume += sale.proceeds;
+  mm.recent.unshift({ t: now, asset, side, price: round(sale.price, 4), shares: round(shares, 2), candle, rebate: 0, stop: true });
+  if (mm.recent.length > 40) mm.recent.length = 40;
+  return sale.proceeds;
 }
 
 /** Desk currently doing best: highest average per market minus one standard error, after 10 markets. */

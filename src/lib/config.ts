@@ -70,6 +70,8 @@ export const config = () => ({
   mmRefill: bool('MM_REFILL', true),
   /** Settled market windows between two desk evolutions (24 ≈ one hour: BTC and ETH each settle every 5 minutes). */
   mmEvolveEvery: num('MM_EVOLVE_EVERY_WINDOWS', 24),
+  /** Markets the desks quote. ETH lost with every setting tested, so BTC only by default. */
+  mmAssets: (process.env.MM_ASSETS || 'btc').split(',').map((x) => x.trim()).filter((x): x is 'btc' | 'eth' => x === 'btc' || x === 'eth'),
   mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
   mmRebate: num('MM_REBATE', 0.2),
   // --- auth
