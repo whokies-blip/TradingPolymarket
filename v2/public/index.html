@@ -38,6 +38,8 @@
     <div class="row"><span class="badge" id="status">connexion…</span><input id="token" type="password" placeholder="Jeton administrateur" aria-label="Jeton administrateur" /><button id="connect">Se connecter</button></div>
   </div>
 
+  <section class="card" id="problems" hidden style="border-color:var(--neg,#c0392b)"></section>
+
   <div class="grid">
     <section class="card"><h2>Marché BTC en direct</h2><div id="market" class="muted">En attente des données…</div></section>
     <section class="card"><h2>Santé et latence</h2><div id="health" class="muted">—</div></section>
@@ -92,6 +94,12 @@ function renderFrame(f) {
 
 function renderView() {
   const v = view;
+  const probs = [];
+  if (v.geo && v.geo.blocked) probs.push(`Polymarket voit votre connexion depuis <b>${esc(v.geo.country)}</b> et y <b>bloque les ordres réels</b> : la production est impossible d’ici.` + (v.feedError ? '' : ' Le mode démo, lui, fonctionne si le carnet d’ordres s’affiche.'));
+  if (v.feedError) probs.push(`Données Polymarket inaccessibles : <b>${esc(v.feedError.msg)}</b>.` + (/HTTP 403/.test(v.feedError.msg) ? ' Un 403 veut dire que Polymarket refuse votre réseau ou votre pays : sans carnet d’ordres, les bureaux ne peuvent rien simuler. Il faut lancer le moteur depuis une connexion située dans un pays autorisé (par exemple un petit serveur loué), pas contourner le blocage.' : / injoignable/.test(v.feedError.msg) ? ' Vérifiez la connexion internet (ou un pare-feu / filtrage DNS du fournisseur d’accès).' : ''));
+  if (v.feeds.binanceAgeMs > 15000) probs.push(`Prix Binance non reçus depuis ${Math.round(v.feeds.binanceAgeMs / 1000)} s.`);
+  $('problems').hidden = !probs.length;
+  $('problems').innerHTML = probs.length ? `<h2 class="neg">Pourquoi rien ne bouge</h2>${probs.map((p) => `<p>${p}</p>`).join('')}` : '';
   const lat = v.metrics.latency;
   const names = { binance_ms: 'Prix Binance (délai du flux)', polymarket_book_ms: 'Carnet Polymarket (délai du flux)', loop_ms: 'Boucle du moteur', order_place_ms: 'Pose d’un ordre réel', order_cancel_ms: 'Annulation réelle', order_status_ms: 'Lecture d’un ordre', heartbeat_ms: 'Heartbeat', user_feed_ms: 'Canal privé (délai)', save_ms: 'Sauvegarde SQLite', production_step_ms: 'Étape de production' };
   $('health').className = '';

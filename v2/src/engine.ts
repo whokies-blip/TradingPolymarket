@@ -37,6 +37,8 @@ export class Engine {
   private book: BookFeed | null = null;
   private bookStart = -1;
   private rolling = false;
+  /** Last reason the Polymarket market data could not be reached; null once it works. */
+  private feedError: { t: number; msg: string } | null = null;
   private rollAfter = 0;
   private rollDelay = 2000;
   private windows = new Map<string, WindowRec>();
@@ -165,6 +167,7 @@ export class Engine {
     this.book = next;
     this.bookStart = start;
     this.rollDelay = 2000;
+    this.feedError = null;
     if (!this.reconciled) {
       this.reconciled = true;
       void this.reconcileOpenOrders();
@@ -226,7 +229,11 @@ export class Engine {
       this.rollAfter = Date.now() + this.rollDelay;
       this.rollDelay = Math.min(this.rollDelay * 2, 60000);
       void this.roll(start)
-        .catch((e) => this.log('warn', `carnet Polymarket : ${String(e?.message || e).slice(0, 120)}`))
+        .catch((e) => {
+          const msg = String(e?.message || e).slice(0, 160);
+          if (this.feedError?.msg !== msg) this.log('warn', `carnet Polymarket : ${msg}`);
+          this.feedError = { t: nowSec(), msg };
+        })
         .finally(() => (this.rolling = false));
     }
     const ready = feed && this.bookStart === start && feed.ready() ? feed : null;
@@ -236,7 +243,7 @@ export class Engine {
       this.lastSettle = now;
       void this.settle(now);
     }
-    if (cfg.mmLive && now - this.lastGeo > 600) {
+    if (now - this.lastGeo > 600) {
       this.lastGeo = now;
       fetchGeoblock().then((g) => (this.state.geo = { t: nowSec(), ...g })).catch(() => {});
     }
@@ -485,6 +492,7 @@ export class Engine {
     return {
       now,
       uptime: Math.round((Date.now() - this.startedAt) / 1000),
+      feedError: this.feedError, geo: this.state.geo ?? null,
       feeds: { binanceAgeMs: Date.now() - this.spot.lastMsg, polymarketAgeMs: this.book ? Date.now() - this.book.lastMsg : null, userChannel: this.userFeed?.connected ?? false, heartbeatAgeMs: this.heartbeat.lastOk ? Date.now() - this.heartbeat.lastOk : null },
       metrics: metrics.snapshot(),
       settledWindows: this.state.settledWindows,
