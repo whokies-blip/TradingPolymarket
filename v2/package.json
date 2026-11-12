@@ -1,0 +1,26 @@
+{
+  "name": "polymarket-mm-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Moteur de tenue de marché Polymarket (BTC 5 min) : processus permanent, temps réel, SQLite.",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --import tsx src/main.ts",
+    "dev": "node --disable-warning=ExperimentalWarning --watch --import tsx src/main.ts",
+    "probe": "node --disable-warning=ExperimentalWarning --import tsx scripts/probe.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --import tsx --test tests/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@polymarket/clob-client": "^5.8.1",
+    "tsx": "^4.23.15",
+    "viem": "^2.57.19"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Polymarket MM v2</title>
+<style>
+  :root { color-scheme: light; --bg:#f4f3f0; --surface:#fcfcfb; --border:#e3e1da; --text:#0b0b0b; --text2:#52514e; --muted:#86847d; --series:#2a78d6; --good:#006300; --bad:#b02a2a; --good-bg:#e3f3e3; --bad-bg:#fae6e6; --warn-bg:#fdf1d4; --warn:#7a5200; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; --bg:#111110; --surface:#1a1a19; --border:#2e2e2b; --text:#f0efec; --text2:#c3c2b7; --muted:#8b8a82; --series:#3987e5; --good:#0ca30c; --bad:#e66767; --good-bg:#12301a; --bad-bg:#3a1c1c; --warn-bg:#3a2e10; --warn:#e0b040; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 10px; }
+  .sub { color:var(--text2); font-size:13px; } .muted { color:var(--muted); }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; } .between { justify-content:space-between; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-top:12px; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
+  .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; font-weight:600; background:var(--border); color:var(--text2); }
+  .good { background:var(--good-bg); color:var(--good); } .bad { background:var(--bad-bg); color:var(--bad); } .warn { background:var(--warn-bg); color:var(--warn); }
+  .pos { color:var(--good); } .neg { color:var(--bad); }
+  .tablewrap { overflow-x:auto; } table { border-collapse:collapse; width:100%; font-size:13px; }
+  th { text-align:left; color:var(--text2); font-weight:600; padding:6px 10px 6px 0; border-bottom:1px solid var(--border); white-space:nowrap; }
+  td { padding:5px 10px 5px 0; border-bottom:1px solid var(--border); font-variant-numeric:tabular-nums; } td.num, th.num { text-align:right; }
+  .big { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .books { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .lvl { display:grid; grid-template-columns:50px 1fr; padding:1px 6px; border-radius:4px; font-variant-numeric:tabular-nums; font-size:13px; }
+  .lvl.a { background:var(--bad-bg); } .lvl.b { background:var(--good-bg); } .lvl span:last-child { text-align:right; }
+  button, input { font:inherit; } button { font-weight:600; padding:7px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; }
+  button.primary { background:var(--text); color:var(--surface); } input { padding:7px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); width:220px; max-width:100%; }
+  .check { display:flex; gap:10px; padding:5px 0; border-bottom:1px solid var(--border); } .check span:nth-child(2) { flex:1; }
+  .log div { padding:4px 0; border-bottom:1px solid var(--border); font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="row between">
+    <div><h1>Polymarket — tenue de marché v2</h1><div class="sub" id="sub">moteur permanent · BTC 5 minutes</div></div>
+    <div class="row"><span class="badge" id="status">connexion…</span><input id="token" type="password" placeholder="Jeton administrateur" aria-label="Jeton administrateur" /><button id="connect">Se connecter</button></div>
+  </div>
+
+  <div class="grid">
+    <section class="card"><h2>Marché BTC en direct</h2><div id="market" class="muted">En attente des données…</div></section>
+    <section class="card"><h2>Santé et latence</h2><div id="health" class="muted">—</div></section>
+  </div>
+
+  <section class="card"><div class="row between"><h2>Bureaux (simulation)</h2><span class="sub" id="evolve"></span></div><div id="desks" class="tablewrap muted">—</div></section>
+  <section class="card"><h2>Inventaire en direct</h2><div id="inventory" class="tablewrap muted">—</div></section>
+  <section class="card"><div class="row between"><h2>Production — argent réel</h2><span class="badge" id="liveBadge">—</span></div><div id="live" class="muted">—</div></section>
+  <div class="grid">
+    <section class="card"><h2>Derniers marchés</h2><div id="recent" class="row">—</div></section>
+    <section class="card"><h2>Journal</h2><div id="log" class="log">—</div></section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const usd = (x) => (x < 0 ? '−' : '') + Math.abs(x).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $';
+const signed = (x) => (x > 0 ? '+' : '') + usd(x);
+const cls = (x) => (x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+const cents = (p) => (Math.round(p * 1000) / 10).toString().replace('.', ',') + '¢';
+const time = (t) => new Date(t * 1000).toLocaleTimeString('fr-FR');
+let token = '';
+try { token = localStorage.getItem('v2token') || ''; } catch {}
+$('token').value = token;
+let es = null, view = null, lastData = 0;
+
+function connect() {
+  token = $('token').value.trim();
+  try { localStorage.setItem('v2token', token); } catch {}
+  if (es) es.close();
+  es = new EventSource('/api/stream?token=' + encodeURIComponent(token));
+  es.addEventListener('view', (e) => { view = JSON.parse(e.data); lastData = Date.now(); renderView(); });
+  es.addEventListener('frame', (e) => { lastData = Date.now(); renderFrame(JSON.parse(e.data)); });
+  es.onerror = () => { $('status').textContent = 'déconnecté — nouvel essai…'; $('status').className = 'badge bad'; };
+}
+$('connect').onclick = connect;
+setInterval(() => {
+  const age = Date.now() - lastData;
+  if (lastData && age < 3000) { $('status').textContent = 'en direct'; $('status').className = 'badge good'; }
+}, 1000);
+
+function renderFrame(f) {
+  const left = Math.max(0, f.windowStart + 300 - f.t);
+  const book = (b) => !b ? '' : [...b.asks].reverse().map(([p, n]) => `<div class="lvl a"><span>${cents(p)}</span><span>${n}</span></div>`).join('') + '<div class="muted" style="text-align:center;font-size:12px">—</div>' + b.bids.map(([p, n]) => `<div class="lvl b"><span>${cents(p)}</span><span>${n}</span></div>`).join('');
+  $('market').className = '';
+  $('market').innerHTML = `<div class="row between"><div class="big">${f.spot ? usd(f.spot) : '—'}</div><span class="badge">${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} restantes</span></div>` +
+    (f.books ? `<div class="books" style="margin-top:10px"><div><b>Pari « Hausse » ▲</b>${book(f.books.up)}</div><div><b>Pari « Baisse » ▼</b>${book(f.books.down)}</div></div>` : '<p class="muted">Carnet en attente…</p>');
+  const rows = f.inventory.filter((r) => r.net !== 0 || r.buyUp || r.buyDown);
+  $('inventory').className = 'tablewrap';
+  $('inventory').innerHTML = rows.length ? `<table><thead><tr><th>Bureau</th><th>Position</th><th class="num">Prix moyen</th><th class="num">Résultat latent</th><th>Achat Hausse</th><th>Achat Baisse</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.desk)}</td><td>${r.net > 0 ? `<b>${r.net} Hausse ▲</b>` : r.net < 0 ? `<b>${-r.net} Baisse ▼</b>` : '<span class="muted">aucune</span>'}</td><td class="num">${r.avg === null ? '—' : cents(r.avg)}</td><td class="num ${cls(r.unrealized || 0)}">${r.unrealized === null ? '—' : signed(r.unrealized)}</td><td>${r.buyUp || '—'}</td><td>${r.buyDown || '—'}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">Aucun stock ni ordre en attente.</p>';
+}
+
+function renderView() {
+  const v = view;
+  const lat = v.metrics.latency;
+  const names = { binance_ms: 'Prix Binance (délai du flux)', polymarket_book_ms: 'Carnet Polymarket (délai du flux)', loop_ms: 'Boucle du moteur', order_place_ms: 'Pose d’un ordre réel', order_cancel_ms: 'Annulation réelle', order_status_ms: 'Lecture d’un ordre', heartbeat_ms: 'Heartbeat', user_feed_ms: 'Canal privé (délai)', save_ms: 'Sauvegarde SQLite', production_step_ms: 'Étape de production' };
+  $('health').className = '';
+  $('health').innerHTML = `<p class="sub">En marche depuis ${Math.round(v.uptime / 60)} min · Binance il y a ${v.feeds.binanceAgeMs} ms · Polymarket il y a ${v.feeds.polymarketAgeMs ?? '—'} ms · canal privé ${v.feeds.userChannel ? 'connecté' : 'inactif'} · heartbeat ${v.feeds.heartbeatAgeMs === null ? 'inactif' : 'il y a ' + v.feeds.heartbeatAgeMs + ' ms'}</p>` +
+    `<table><thead><tr><th>Mesure</th><th class="num">médiane</th><th class="num">95 %</th><th class="num">max</th></tr></thead><tbody>${Object.entries(lat).map(([k, s]) => `<tr><td>${esc(names[k] || k)}</td><td class="num">${s.p50} ms</td><td class="num">${s.p95} ms</td><td class="num">${s.max} ms</td></tr>`).join('')}</tbody></table>`;
+  $('evolve').textContent = `${v.settledWindows} marchés réglés · prochaine évolution dans ${v.nextEvolveIn} marchés`;
+  $('desks').className = 'tablewrap';
+  $('desks').innerHTML = `<table><thead><tr><th>Bureau</th><th>Achète entre</th><th class="num">Gain min.</th><th class="num">Stop</th><th class="num">Stock max</th><th>Cote de</th><th class="num">Marchés</th><th class="num">Moyenne / marché</th><th class="num">± incertitude</th><th class="num">Total</th></tr></thead><tbody>${v.desks.map((d) => `<tr><td>${esc(d.id)} ${d.leader ? '<span class="badge good">En tête</span>' : ''}</td><td>${Math.round(d.genes.minPrice * 100)}–${Math.round(d.genes.maxPrice * 100)}¢</td><td class="num">${Math.round(d.genes.minGain * 100)} %</td><td class="num">${d.genes.stopLoss ? '−' + Math.round(d.genes.stopLoss * 100) + ' %' : 'aucun'}</td><td class="num">${d.genes.maxStock}</td><td>${d.genes.startAt}–${d.genes.stopAt} s</td><td class="num">${d.markets}</td><td class="num ${cls(d.perMarket || 0)}">${d.perMarket === null ? '—' : signed(d.perMarket)}</td><td class="num">${d.se === null ? '—' : '± ' + usd(d.se)}</td><td class="num ${cls(d.total)}">${signed(d.total)}</td></tr>`).join('')}</tbody></table>`;
+  const L = v.live, open = L.gate.every((g) => g.ok);
+  $('liveBadge').textContent = open ? 'Actif : ordres réels' : 'Bloqué : aucun ordre réel';
+  $('liveBadge').className = 'badge ' + (open ? 'good' : 'warn');
+  $('live').className = '';
+  $('live').innerHTML = `<p class="sub">Copie le bureau <b>${esc(L.desk || '—')}</b> · ordres de ${L.limits.size} parts · stock max ${L.limits.maxStock} · perte max ${usd(L.limits.maxExposure)} par marché et ${usd(L.limits.maxDailyLoss)} par jour · ordres post-only qui expirent seuls · si le moteur se tait 10 s, Polymarket annule tout (heartbeat).</p>` +
+    L.gate.map((g) => `<div class="check"><span class="${g.ok ? 'pos' : 'neg'}">${g.ok ? '✓' : '✗'}</span><span>${esc(g.label)}</span><span class="muted">${esc(g.detail)}</span></div>`).join('') +
+    `<p>Résultat : <b class="${cls(L.pnl)}">${signed(L.pnl)}</b> · aujourd’hui <b class="${cls(L.dayPnl)}">${signed(L.dayPnl)}</b> · ${L.markets} marchés</p>` +
+    (L.lastError ? `<p class="neg">Dernière erreur (${time(L.lastError.t)}) : ${esc(L.lastError.msg)}</p>` : '') +
+    `<div class="row">${L.armed ? '<button id="disarm">Désarmer</button>' : `<button class="primary" id="arm" ${L.enabled ? '' : 'disabled'}>Armer</button>`}<button id="reset">Remettre la simulation à zéro</button></div>` +
+    (L.fills.length ? `<table style="margin-top:8px"><thead><tr><th>Heure</th><th>Exécution réelle</th><th class="num">Parts</th><th class="num">Prix</th></tr></thead><tbody>${L.fills.map((f) => `<tr><td>${time(f.t)}</td><td>${f.side === 'BUY' ? 'Achat' : 'Vente'} ${f.token === 'up' ? 'Hausse' : 'Baisse'}</td><td class="num">${f.shares}</td><td class="num">${cents(f.price)}</td></tr>`).join('')}</tbody></table>` : '');
+  const ctl = (action, confirmText) => async () => {
+    if (confirmText && !confirm(confirmText)) return;
+    const r = await fetch('/api/control', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: JSON.stringify({ action }) });
+    if (!r.ok) alert((await r.json()).error || 'Erreur');
+  };
+  if ($('arm')) $('arm').onclick = ctl('arm', 'Armer la production ? Des ordres réels seront placés dès que toutes les conditions seront remplies.');
+  if ($('disarm')) $('disarm').onclick = ctl('disarm');
+  $('reset').onclick = ctl('reset', 'Remettre la simulation à zéro ? Les données d’argent réel sont conservées.');
+  $('recent').innerHTML = v.recent.map((r) => `<span class="badge ${r.outcome === 'up' ? 'good' : r.outcome === 'down' ? 'bad' : ''}">${time(r.start).slice(0, 5)} ${r.outcome === 'up' ? '▲' : r.outcome === 'down' ? '▼' : '—'}</span>`).join('') || '<span class="muted">Aucun.</span>';
+  $('log').innerHTML = v.log.map((l) => `<div><span class="muted">${time(l.t)}</span> · ${esc(l.msg)}</div>`).join('');
+}
+if (token) connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped        # relancé automatiquement après un plantage ou un redémarrage du serveur
+    stop_grace_period: 20s         # le temps d'annuler les ordres réels et de sauvegarder
+    env_file: ../.env
+    volumes:
+      - ./data:/data               # base SQLite conservée entre les mises à jour
+    ports:
+      - "127.0.0.1:8080:8080"      # accessible depuis le serveur seulement ; passer par un tunnel SSH ou un proxy HTTPS

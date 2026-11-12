@@ -1,0 +1,20 @@
+# Alternative à Docker : service systemd.
+#   sudo cp deploy/polymarket-mm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now polymarket-mm
+[Unit]
+Description=Polymarket market making v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/polymarket-mm/v2
+EnvironmentFile=/opt/polymarket-mm/v2/.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning --import tsx src/main.ts
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+User=polymarket
+
+[Install]
+WantedBy=multi-user.target
