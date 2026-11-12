@@ -249,6 +249,23 @@ export interface LiveFrame {
   assets: Record<Asset, LiveAsset>;
   /** Only in the first frame of a session: the last two minutes of spot prices, [time, price]. */
   history?: Record<Asset, [number, number][]>;
+  /** Market-making desks: what each one holds right now in the current markets, and its resting orders. */
+  inventory?: LiveInventory[];
+}
+
+export interface LiveInventory {
+  desk: string;
+  asset: Asset;
+  /** Net Up shares: positive = holding Up, negative = holding Down (−net shares). */
+  net: number;
+  /** Average price paid for the side held. */
+  avg: number | null;
+  /** Current value of the position at the market mid, plus cash spent/received and rewards so far. */
+  unrealized: number | null;
+  rewards: number;
+  /** Resting orders: buy Up at bidPrice, buy Down at 1 − askPrice. */
+  buyUp: { price: number; shares: number } | null;
+  buyDown: { price: number; shares: number } | null;
 }
 
 /** One passive order of the market-making desk that got filled. */

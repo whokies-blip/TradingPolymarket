@@ -518,6 +518,31 @@ export default function Page() {
             <Tile label="Total" value={signed(v.mm.pnl + v.mm.rewards)} tone={cls(v.mm.pnl + v.mm.rewards)} hint="trading + récompenses" />
             <Tile label="Ordres exécutés" value={String(v.mm.fills)} hint={`en stock : ${Math.round(v.mm.stockUp)} Hausse · ${Math.round(v.mm.stockDown)} Baisse`} />
           </div>
+          <h2 style={{ marginTop: 14 }}>Inventaire en direct {live?.inventory && running ? <span className="badge good"><span className="live-dot" aria-hidden />mis à jour {fps} fois par seconde</span> : <span className="badge">démarrez le moteur pour le voir en direct</span>}</h2>
+          {live?.inventory && running ? (() => {
+            const rows = live.inventory.filter((r) => r.net !== 0 || r.buyUp || r.buyDown);
+            const total = live.inventory.reduce((n, r) => n + (r.unrealized ?? 0), 0);
+            const stockUp = live.inventory.reduce((n, r) => n + Math.max(0, r.net), 0);
+            const stockDown = live.inventory.reduce((n, r) => n + Math.max(0, -r.net), 0);
+            return <>
+              <p className="sub">Marchés de {time(live.windowStart).slice(0, 5)} · tous bureaux confondus : <b>{Math.round(stockUp)} parts Hausse</b> et <b>{Math.round(stockDown)} parts Baisse</b> en stock · résultat latent <b className={cls(total)}>{signed(total)}</b> (au prix du marché, récompenses comprises).</p>
+              {rows.length === 0 ? <p className="muted">Aucun stock ni ordre en attente pour l’instant (début ou fin de marché, ou prix hors des bandes d’achat).</p> : (
+                <div className="tablewrap"><table>
+                  <thead><tr><th>Bureau</th><th>Marché</th><th>Position</th><th className="num">Prix moyen</th><th className="num">Résultat latent</th><th>Ordre d’achat Hausse</th><th>Ordre d’achat Baisse</th></tr></thead>
+                  <tbody>{rows.map((r) => (
+                    <tr key={r.desk + r.asset}>
+                      <td>{r.desk}{r.desk === v.mm.leader && <span className="badge good" style={{ marginLeft: 6 }}>En tête</span>}</td><td>{r.asset.toUpperCase()}</td>
+                      <td>{r.net > 0 ? <b>{r.net} Hausse ▲</b> : r.net < 0 ? <b>{-r.net} Baisse ▼</b> : <span className="muted">aucune</span>}</td>
+                      <td className="num">{r.avg === null ? '—' : tick(r.avg)}</td>
+                      <td className={`num ${cls(r.unrealized ?? 0)}`}>{r.unrealized === null ? '—' : signed(r.unrealized)}</td>
+                      <td>{r.buyUp ? `${r.buyUp.shares} à ${tick(r.buyUp.price)}` : <span className="muted">—</span>}</td>
+                      <td>{r.buyDown ? `${r.buyDown.shares} à ${tick(r.buyDown.price)}` : <span className="muted">—</span>}</td>
+                    </tr>))}</tbody>
+                </table></div>
+              )}
+            </>;
+          })() : <p className="sub">Stock du bureau en tête au dernier enregistrement : {Math.round(v.mm.stockUp)} parts Hausse · {Math.round(v.mm.stockDown)} parts Baisse.</p>}
+          <h2 style={{ marginTop: 14 }}>Les bureaux</h2>
           <div className="tablewrap" style={{ marginTop: 10 }}><table>
             <thead><tr><th>Bureau</th><th>Achète entre</th><th className="num">Gain min.</th><th className="num">Écart (× agitation)</th><th className="num">Marchés</th><th className="num">Moyenne par marché</th><th className="num">Total</th><th className="num">dont récompenses</th><th className="num">Exécutions</th></tr></thead>
             <tbody>{v.desks.map((d) => (

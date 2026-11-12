@@ -8,7 +8,7 @@ import { BookFeed, SpotFeed } from './feeds';
 import { blendSigma, getSeries, priceAt, strikeOf, windowStartOf, type Series } from './prices';
 import { ConflictError, getStore, type Store } from './store';
 import { FAMILY_LABEL, LEAD_WINDOWS, emptyStats, evaluate, evolve, exitsEarly, openGenomes, pickChampion, record, score, seedGenomes, type Quote, type Signal } from './strategies';
-import type { Account, Asset, ExitReason, GateCheck, LiveFrame, LogEntry, ShadowTrade, Side, State, Strategy, Trade, WindowRec } from './types';
+import type { Account, Asset, ExitReason, GateCheck, LiveFrame, LiveInventory, LogEntry, ShadowTrade, Side, State, Strategy, Trade, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -733,6 +733,25 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
           };
         }
         const frame: LiveFrame = { t: now, windowStart: start, assets };
+        if (cfg.mmEnabled) {
+          const inventory: LiveInventory[] = [];
+          for (const d of state.desks) {
+            for (const a of ASSETS) {
+              const key = `${a}-${start}`;
+              const book = d.mm.books[key];
+              const q = deskQuotes.get(d.id)?.[a];
+              const mid = assets[a]?.mid ?? null;
+              inventory.push({
+                desk: d.id, asset: a, net: round(book?.net ?? 0, 2), avg: book?.avg != null && book.net !== 0 ? round(book.avg, 4) : null,
+                unrealized: book && mid !== null ? round(book.cash + book.net * mid + (book.rew ?? 0), 2) : book ? null : 0,
+                rewards: round(book?.rew ?? 0, 4),
+                buyUp: q?.bid && q.bid.left > 0 ? { price: q.bid.price, shares: round(q.bid.left, 2) } : null,
+                buyDown: q?.ask && q.ask.left > 0 ? { price: round(1 - q.ask.price, 2), shares: round(q.ask.left, 2) } : null,
+              });
+            }
+          }
+          frame.inventory = inventory;
+        }
         if (!sentHistory) {
           sentHistory = true;
           frame.history = Object.fromEntries(ASSETS.map((a) => [a, series[a].ticks.slice(-120).map((k) => [k.t, k.c] as [number, number])])) as LiveFrame['history'];
