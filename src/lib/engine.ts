@@ -1,5 +1,6 @@
 import { ASSETS, WINDOW, config, type Config } from './config';
-import { liveBalance, liveConfigured, placeLiveBuy, placeLiveSell } from './live';
+import { keyConfigured, liveBalance, liveConfigured, liveExchange, mmLiveConfigured, placeLiveBuy, placeLiveSell } from './live';
+import { cancelOrders as cancelLiveMm, liveDesk, mmLiveGate, mmLiveStep, newMmLive, settleLive } from './mmlive';
 import { mulberry32, round } from './math';
 import { capSizes, deskLeader, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, stopHit, stopOut, type Quotes } from './mm';
 import { computeFeatures, fairProb, featureVector, leadOf, learn, newModel, predict, type Features } from './model';
@@ -18,7 +19,7 @@ const newAccount = (bankroll: number): Account => ({ startBankroll: bankroll, ba
 export function initState(cfg: Config, now = nowSec()): State {
   const strategies: Strategy[] = (cfg.strategies ? [...seedGenomes(), ...openGenomes()] : []).map((genes, i) => ({ id: `g0-${i}`, gen: 0, genes, stats: emptyStats(), bornAt: now, bornWindow: 0 }));
   return {
-    version: 9,
+    version: 10,
     createdAt: now,
     updatedAt: now,
     tickCount: 0,
@@ -37,6 +38,7 @@ export function initState(cfg: Config, now = nowSec()): State {
     log: [{ t: now, level: 'info', msg: cfg.strategies ? `Système initialisé : ${strategies.length} stratégies en observation.` : 'Système initialisé : tenue de marché uniquement.' }],
     desks: seedDesks(now),
     desksEvolvedAt: 0,
+    mmLive: newMmLive(),
     tape: [],
     recent: [],
   };
@@ -44,7 +46,12 @@ export function initState(cfg: Config, now = nowSec()): State {
 
 /** A state written by an older version of the scoring rules is not comparable: start clean, keep the controls. */
 export function migrate(state: State | null, cfg: Config): State {
-  if (state && state.version === 9) return state;
+  if (state && state.version === 10) return state;
+  if (state && (state.version as number) === 9) {
+    state.mmLive = newMmLive();
+    state.version = 10;
+    return state;
+  }
   if (state && (state.version as number) === 8) {
     // Market making only: the directional strategies are removed; the desks keep everything they learned.
     if (!cfg.strategies) {
@@ -53,8 +60,8 @@ export function migrate(state: State | null, cfg: Config): State {
       state.tape = [];
       log(state, 'info', 'Stratégies directionnelles retirées : tenue de marché uniquement.');
     }
-    state.version = 9;
-    return state;
+    (state as unknown as { version: number }).version = 9;
+    return migrate(state, cfg);
   }
   if (state && ((state.version as number) === 7 || (state.version as number) === 6 || (state.version as number) === 5)) {
     // Market making now runs several self-improving desks; strategies and their statistics are kept.
@@ -417,6 +424,7 @@ export function settleWindow(state: State, cfg: Config, win: WindowRec, outcome:
   for (const acct of [state.demo, state.live]) {
     for (const t of acct.trades) if (t.windowStart === win.start && t.asset === win.asset) settleTrade(acct, t, outcome, now);
   }
+  settleLive(state.mmLive, win.key, outcome, now);
   // Every desk gets one result per market (0 if nothing was filled), so they are compared fairly.
   if (outcome !== 'void') for (const d of state.desks) record(d.stats, settleMm(d.mm, win.key, outcome, now), 1, cfg.ewDecay);
   else for (const d of state.desks) settleMm(d.mm, win.key, outcome, now);
@@ -533,6 +541,7 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
   // Last 30 one-second samples of each market's Up price, to measure how agitated it is.
   const mids: Record<Asset, number[]> = { btc: [], eth: [] };
   let midSecond = 0;
+  let mmLiveBusy = false;
   let lastCandle = 0;
   let lead10: number | null = null;
   const evalAsset = (asset: Asset, now: number, start: number, feed: BookFeed) => {
@@ -718,6 +727,24 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
             }
           }
         }
+        // Production market making: the copied desk's settings, with real orders, when every safeguard allows it.
+        if (cfg.mmLive && !mmLiveBusy && (state.mmLive.orders.length > 0 || state.control.liveArmed)) {
+          const a = 'btc' as const;
+          const w = state.windows[`${a}-${start}`] ?? null;
+          const top = w ? feed.best(w.upToken) : null;
+          const usable = !!top && top.ask !== null && top.bid !== null && top.ask - top.bid <= 0.05 && top.bid >= 0.05 && top.ask <= 0.95;
+          const upMid = usable ? (top!.ask! + top!.bid!) / 2 : null;
+          const gateOpen = mmLiveGate(state, cfg, keyConfigured(cfg), now, upMid).every((g) => g.ok);
+          const desk = liveDesk(state, cfg);
+          const open = priceAt(series[a], now - cfg.mmSeconds);
+          const close = spot.last[a];
+          mmLiveBusy = true;
+          run(mmLiveStep({
+            state, cfg, ex: liveExchange(cfg), now, gateOpen, win: w, genes: desk?.genes ?? null,
+            top: usable ? { bid: top!.bid!, ask: top!.ask! } : null, vol: recentMove(mids[a], cfg.mmSeconds),
+            sizes: open && close ? quoteSizes(open, close, cfg.mmSize) : null,
+          }).finally(() => (mmLiveBusy = false)));
+        }
         // Open positions: is it time to take the gain, cut the loss, or give up waiting?
         for (const a of ASSETS) {
           const win = state.windows[`${a}-${start}`];
@@ -808,6 +835,8 @@ async function runStream(state: State, cfg: Config, persist: () => Promise<void>
     spot.close();
     (book as BookFeed | null)?.close();
     await Promise.allSettled([...background]);
+    // Never leave real orders unwatched between two sessions (they would also expire on their own).
+    if (state.mmLive.orders.length) await cancelLiveMm(state.mmLive, liveExchange(cfg), [...state.mmLive.orders], nowSec()).catch(() => {});
   }
   return evals;
 }
@@ -819,7 +848,8 @@ function applyControl(state: State, cfg: Config, control: State['control']) {
   if (control.resetAll) {
     // Start every counter again from zero: strategies, signals, demo account, market-making desk, model.
     const lock = state.lock;
-    Object.assign(state, initState(cfg), { control: state.control, lock, geo: state.geo });
+    // Real-money records (orders still resting, shares held) are never wiped by a reset.
+    Object.assign(state, initState(cfg), { control: state.control, lock, geo: state.geo, mmLive: state.mmLive });
     log(state, 'info', 'Toutes les statistiques ont été remises à zéro.');
     return;
   }
@@ -917,7 +947,7 @@ export async function runTick(opts: TickOptions = {}): Promise<TickResult> {
   let passes = 0;
   let mode: 'realtime' | 'polling' = 'polling';
   try {
-    if (cfg.liveTrading && (!state.geo || nowSec() - state.geo.t > 600)) {
+    if ((cfg.liveTrading || cfg.mmLive) && (!state.geo || nowSec() - state.geo.t > 600)) {
       try {
         state.geo = { t: nowSec(), ...(await fetchGeoblock()) };
       } catch {

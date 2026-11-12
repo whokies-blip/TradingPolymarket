@@ -3,6 +3,8 @@ import { computeGate, recentDemoRoi } from './engine';
 import { liveConfigured } from './live';
 import type { Store } from './store';
 import { deskLeader } from './mm';
+import { keyConfigured, mmLiveConfigured } from './live';
+import { liveDesk, mmLiveGate } from './mmlive';
 import { FAMILY_LABEL, describe, score } from './strategies';
 import type { State } from './types';
 
@@ -41,6 +43,19 @@ export function publicView(state: State, store: Store) {
     gate: computeGate(state, cfg, now),
     log: state.log.slice(0, 60),
     tape: (state.tape ?? []).slice(0, 240),
+    mmLive: (() => {
+      const L = state.mmLive;
+      const snap = state.snapshots.btc;
+      const upMid = snap?.mid ?? null;
+      return {
+        enabled: cfg.mmLive, configured: mmLiveConfigured(cfg), desk: liveDesk(state, cfg)?.id ?? null,
+        gate: mmLiveGate(state, cfg, keyConfigured(cfg), now, upMid),
+        orders: L.orders.map((o) => ({ token: o.token, side: o.side, price: o.price, size: o.size, matched: o.matched })),
+        books: Object.entries(L.books).map(([key, b]) => ({ key, ...b })),
+        pnl: L.pnl, dayPnl: L.day === Math.floor(now / 86400) ? L.dayPnl : 0, markets: L.markets, fills: L.fills.slice(0, 15), lastError: L.lastError ?? null,
+        limits: { size: cfg.mmLiveSize, maxStock: cfg.mmLiveMaxStock, maxExposure: cfg.mmLiveMaxExposure, maxDailyLoss: cfg.mmLiveMaxDailyLoss, minMarkets: cfg.mmLiveMinMarkets, minTstat: cfg.mmLiveMinTstat },
+      };
+    })(),
     ...(() => {
       const leader = deskLeader(state.desks) ?? state.desks[0];
       const m = leader.mm;

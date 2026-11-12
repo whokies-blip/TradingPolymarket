@@ -44,6 +44,17 @@ Sur 4 jours d'historique BTC, cette règle donne entre −7 $ et +0,75 $ par mar
 
 Les réglages de départ viennent d'une recherche aléatoire sur 50 000 combinaisons par actif (taille et sens des bougies, stock maximum, rechargement, bande d'achat, gain minimum, écart, heures de cotation, garde de juste valeur) : cherchées sur la première moitié des 4 jours, revérifiées sur la seconde, puis testées sur 2 jours plus récents jamais vus. Sur BTC, 31 des 47 combinaisons positives sur les deux moitiés l'étaient aussi sur les jours jamais vus ; le point commun : acheter seulement entre 40 et 90–95 ¢, garder jusqu'à 80 parts, coter après 60 s, revendre le stock à +30–50 %. Résultat du réglage central : −0,25 $, +0,08 $ et +2,51 $ par marché sur les trois périodes — prometteur sur la dernière, pas une preuve. Vendre à perte (stop de 10 à 50 %, ou tout vendre avant la fin) a dégradé le résultat sur toutes les périodes. Sur ETH, aucune combinaison n'a survécu : les bureaux ne cotent que BTC (`MM_ASSETS`). Un ordre entièrement exécuté est reposé aussitôt au meilleur prix (`MM_REFILL=false` pour attendre la bougie suivante ; sur l'historique, le rechargement immédiat exécute plus et perd plus : −7,5 $ contre −5,8 $ par marché BTC). Sur l'historique, ce plafond ramène les écarts de ±28 $ à ±6 $ par marché sans changer sensiblement le résultat moyen. Simulation uniquement : aucun ordre réel n'est envoyé par ce bureau.
 
+### Tenue de marché en argent réel (production)
+
+Désactivée par défaut. Elle copie les réglages d'un bureau simulé (le bureau en tête, ou celui de `MM_LIVE_DESK`) sur BTC, avec de vrais ordres à cours limité sur Polymarket.
+
+- **Ordres** : « post-only » (jamais de frais de preneur), expiration automatique 2 minutes après leur pose, remplacés au plus toutes les 5 secondes, annulés à chaque fin de session du moteur. Seuls les ordres du système sont annulés, jamais les vôtres.
+- **Limites** : ordres de 5 parts (`MM_LIVE_SIZE`), stock maximum 10 parts (`MM_LIVE_MAX_STOCK`), perte maximale 10 $ par marché si le marché finit du mauvais côté (`MM_LIVE_MAX_EXPOSURE`), arrêt pour la journée après 20 $ de perte (`MM_LIVE_MAX_DAILY_LOSS`, marchés en cours inclus au prix du marché).
+- **Conditions** : `MM_LIVE=true`, clé de portefeuille, région autorisée par Polymarket, armement depuis le tableau de bord, arrêt d'urgence inactif, et un bureau prouvé en simulation (300 marchés et t ≥ 2 par défaut ; `MM_LIVE_MIN_MARKETS` et `MM_LIVE_MIN_TSTAT` à 0 pour passer outre, à vos risques).
+- **Encaissement** : les parts gagnantes restent à réclamer (« Claim ») sur Polymarket.
+
+Ce mode n'a jamais été exécuté avec de vrais fonds : il est testé contre un faux carnet d'ordres uniquement.
+
 ### Quand la position est-elle fermée ?
 
 Chaque réglage a sa règle de sortie, vérifiée cinq fois par seconde :

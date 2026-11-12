@@ -623,6 +623,49 @@ export default function Page() {
 
 </>)}
 
+      {v.mm?.enabled && (
+        <section className="card">
+          <div className="row between">
+            <h2>Production — tenue de marché en argent réel</h2>
+            <span className={`badge ${v.mmLive.gate.every((g) => g.ok) ? 'good' : 'warn'}`}>{v.mmLive.gate.every((g) => g.ok) ? 'Actif : ordres réels' : 'Bloqué : aucun ordre réel'}</span>
+          </div>
+          <p className="sub">Copie les réglages du bureau <b>{v.mmLive.desk ?? '—'}</b> sur BTC avec de vrais ordres à cours limité : jamais de frais de preneur (ordres « post-only »), expiration automatique après 2 minutes, annulation à chaque fin de session. Ordres de {v.mmLive.limits.size} parts, stock maximum {v.mmLive.limits.maxStock} parts, perte maximale {usd(v.mmLive.limits.maxExposure, 0)} par marché et {usd(v.mmLive.limits.maxDailyLoss, 0)} par jour. Les parts gagnantes doivent être encaissées (« Claim ») sur Polymarket.</p>
+          <div className="grid g2" style={{ marginTop: 8 }}>
+            <div>
+              {v.mmLive.gate.map((g) => (<div className="check" key={g.id}><span className={`mark ${g.ok ? 'pos' : 'neg'}`}>{g.ok ? '✓' : '✗'}</span><span style={{ flex: 1 }}>{g.label}</span><span className="muted">{g.detail}</span></div>))}
+            </div>
+            <div>
+              <div className="kv">
+                <span>Résultat des marchés réglés</span><span className={cls(v.mmLive.pnl)}>{signed(v.mmLive.pnl)}</span>
+                <span>Aujourd’hui</span><span className={cls(v.mmLive.dayPnl)}>{signed(v.mmLive.dayPnl)}</span>
+                <span>Marchés traités</span><span>{v.mmLive.markets}</span>
+                <span>Ordres en attente</span><span>{v.mmLive.orders.length ? v.mmLive.orders.map((o) => `${o.side === 'BUY' ? 'achat' : 'vente'} ${o.token === 'up' ? 'Hausse' : 'Baisse'} ${o.size - o.matched}@${tick(o.price)}`).join(' · ') : 'aucun'}</span>
+                <span>Stock réel</span><span>{v.mmLive.books.length ? v.mmLive.books.map((b) => `${Math.round(b.up)} Hausse · ${Math.round(b.down)} Baisse`).join(' | ') : 'aucun'}</span>
+              </div>
+              {v.mmLive.lastError && <p className="sub neg">Dernière erreur ({time(v.mmLive.lastError.t)}) : {v.mmLive.lastError.msg}</p>}
+              <div className="row" style={{ marginTop: 10 }}>
+                {v.control.liveArmed
+                  ? <button className="btn" onClick={() => control('disarm')}>Désarmer</button>
+                  : <button className="btn primary" disabled={!v.mmLive.configured} onClick={() => control('arm', 'Armer la tenue de marché en argent réel ? Des ordres réels seront placés dès que toutes les conditions seront remplies.')}>Armer</button>}
+                {v.control.killSwitch
+                  ? <button className="btn" onClick={() => control('resume')}>Lever l’arrêt d’urgence</button>
+                  : <button className="btn danger" onClick={() => control('kill')}>Arrêt d’urgence</button>}
+                <button className="btn" disabled={!v.mmLive.configured} onClick={() => control('balance')}>Voir le solde</button>
+              </div>
+              {balance !== null && <p className="sub">Solde USDC disponible : <b>{usd(balance)}</b></p>}
+              {msg && <p className="sub">{msg}</p>}
+              {!v.mmLive.configured && <p className="muted">Non configuré sur ce déploiement : il faut MM_LIVE=true et une clé de portefeuille (voir le README).</p>}
+            </div>
+          </div>
+          {v.mmLive.fills.length > 0 && (
+            <div className="tablewrap" style={{ marginTop: 10 }}><table>
+              <thead><tr><th>Heure</th><th>Exécution réelle</th><th className="num">Parts</th><th className="num">Prix</th></tr></thead>
+              <tbody>{v.mmLive.fills.map((f, i) => (<tr key={i}><td>{time(f.t)}</td><td>{f.side === 'BUY' ? 'Achat' : 'Vente'} {f.token === 'up' ? 'Hausse' : 'Baisse'}</td><td className="num">{f.shares}</td><td className="num">{tick(f.price)}</td></tr>))}</tbody>
+            </table></div>
+          )}
+        </section>
+      )}
+
       <section className="grid g2">
         <div className="card">
           {v.settings.strategies && (<>

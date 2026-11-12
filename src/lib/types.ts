@@ -194,7 +194,7 @@ export interface GateCheck {
 }
 
 export interface State {
-  version: 9;
+  version: 10;
   createdAt: number;
   updatedAt: number;
   tickCount: number;
@@ -216,6 +216,8 @@ export interface State {
   log: LogEntry[];
   /** Paper market-making desks, each with its own settings; the weakest are replaced over time. */
   desks: MmDesk[];
+  /** Production market making (real money). */
+  mmLive: MmLiveState;
   /** settledWindows at the last desk evolution. */
   desksEvolvedAt: number;
   /** Latest filled paper orders of all strategies, newest first. */
@@ -329,4 +331,55 @@ export interface MmDesk {
   /** One record per settled market (trading + rewards of that market, 0 when nothing was filled). */
   stats: Stats;
   bornAt: number;
+}
+
+/** One real limit order of the production market-making desk. */
+export interface MmLiveOrder {
+  id: string;
+  key: string;
+  asset: Asset;
+  /** Which outcome token: Up or Down. */
+  token: Side;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  /** Shares already filled, as last reported by the exchange. */
+  matched: number;
+  placedAt: number;
+}
+
+/** Real shares held in one market, and the net cash spent on them (purchases − sales). */
+export interface MmLiveBook {
+  up: number;
+  down: number;
+  cost: number;
+  avgUp: number;
+  avgDown: number;
+}
+
+export interface MmLiveFill {
+  t: number;
+  asset: Asset;
+  token: Side;
+  side: 'BUY' | 'SELL';
+  price: number;
+  shares: number;
+}
+
+/** Production (real money) market making: one desk copied from the simulation, small sizes, hard limits. */
+export interface MmLiveState {
+  orders: MmLiveOrder[];
+  books: Record<string, MmLiveBook>;
+  /** Result of settled markets (shares worth 1 or 0), all time and for the current UTC day. */
+  pnl: number;
+  day: number;
+  dayPnl: number;
+  markets: number;
+  fills: MmLiveFill[];
+  equity: [number, number][];
+  lastError?: { t: number; msg: string };
+  lastPollAt: number;
+  lastCandle: number;
+  /** An order finished: re-quote without waiting for the next candle. */
+  dirty: boolean;
 }

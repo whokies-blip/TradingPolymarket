@@ -1,7 +1,7 @@
 import { isAdmin } from '@/lib/auth';
 import { config } from '@/lib/config';
 import { initState, liveBalance, log, migrate } from '@/lib/engine';
-import { liveConfigured } from '@/lib/live';
+import { liveConfigured, mmLiveConfigured } from '@/lib/live';
 import { ConflictError, getStore } from '@/lib/store';
 
 export const dynamic = 'force-dynamic';
@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   const cfg = config();
   if (action === 'check') return Response.json({ ok: true });
   if (action === 'balance') return Response.json({ ok: true, balance: liveConfigured(cfg) ? await liveBalance(cfg) : null });
-  if (action === 'arm' && !liveConfigured(cfg)) {
+  if (action === 'arm' && !liveConfigured(cfg) && !mmLiveConfigured(cfg)) {
     return Response.json({ error: 'Trading réel non configuré (LIVE_TRADING et POLYMARKET_PRIVATE_KEY).' }, { status: 400 });
   }
   const store = getStore();
@@ -31,7 +31,7 @@ export async function POST(req: Request) {
     if (action === 'resetDemo') state.control.resetDemo = true;
     if (action === 'resetAll') {
       // Reset what is stored now, and flag it so a session already running resets its own copy too.
-      Object.assign(state, initState(cfg), { control: { ...state.control, resetAll: true }, lock: state.lock, geo: state.geo });
+      Object.assign(state, initState(cfg), { control: { ...state.control, resetAll: true }, lock: state.lock, geo: state.geo, mmLive: state.mmLive ?? initState(cfg).mmLive });
       log(state, 'info', 'Toutes les statistiques ont été remises à zéro.');
     }
     const label: Record<string, string> = { kill: "Arrêt d'urgence activé.", resume: 'Reprise après arrêt.', arm: 'Trading réel ARMÉ.', disarm: 'Trading réel désarmé.' };

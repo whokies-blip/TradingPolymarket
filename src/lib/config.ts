@@ -76,6 +76,20 @@ export const config = () => ({
   mmAssets: (process.env.MM_ASSETS || 'btc').split(',').map((x) => x.trim()).filter((x): x is 'btc' | 'eth' => x === 'btc' || x === 'eth'),
   mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
   mmRebate: num('MM_REBATE', 0.2),
+  // --- production market making (real money) — off unless MM_LIVE=true, then armed from the dashboard
+  mmLive: bool('MM_LIVE', false),
+  /** Shares per order (Polymarket minimum: 5). */
+  mmLiveSize: num('MM_LIVE_SIZE', 5),
+  mmLiveMaxStock: num('MM_LIVE_MAX_STOCK', 10),
+  /** Most that can be lost in one market if it settles the wrong way (dollars). */
+  mmLiveMaxExposure: num('MM_LIVE_MAX_EXPOSURE', 10),
+  /** Stop for the day once this much has been lost (settled + current markets valued at the mid). */
+  mmLiveMaxDailyLoss: num('MM_LIVE_MAX_DAILY_LOSS', 20),
+  /** The copied desk must have this record in simulation first (set both to 0 to skip — at your own risk). */
+  mmLiveMinMarkets: num('MM_LIVE_MIN_MARKETS', 300),
+  mmLiveMinTstat: num('MM_LIVE_MIN_TSTAT', 2),
+  /** Desk whose settings are copied (empty = the simulation's leader). */
+  mmLiveDesk: process.env.MM_LIVE_DESK || '',
   // --- auth
   cronSecret: process.env.CRON_SECRET || '',
   adminToken: process.env.ADMIN_TOKEN || '',

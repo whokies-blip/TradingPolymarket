@@ -1,4 +1,5 @@
 import type { Config } from './config';
+import type { Exchange } from './mmlive';
 import { CLOB } from './polymarket';
 
 /**
@@ -7,7 +8,10 @@ import { CLOB } from './polymarket';
  * armed, and the safety gate is open.
  */
 
-export const liveConfigured = (cfg: Config) => cfg.liveTrading && /^(0x)?[0-9a-fA-F]{64}$/.test(cfg.privateKey);
+export const keyConfigured = (cfg: Config) => /^(0x)?[0-9a-fA-F]{64}$/.test(cfg.privateKey);
+export const liveConfigured = (cfg: Config) => cfg.liveTrading && keyConfigured(cfg);
+/** Production market making is configured (it has its own switch, MM_LIVE). */
+export const mmLiveConfigured = (cfg: Config) => cfg.mmLive && keyConfigured(cfg);
 
 export interface LiveOrder {
   ok: boolean;
@@ -111,4 +115,45 @@ export async function placeLiveBuy(
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e).slice(0, 200) };
   }
+}
+
+/**
+ * The real exchange for production market making: post-only limit orders that expire on their own
+ * (GTD), order status, and cancellation by id (never "cancel all", which would touch other orders).
+ */
+export function liveExchange(cfg: Config): Exchange {
+  return {
+    async place(o) {
+      try {
+        const c = await client(cfg);
+        const { Side, OrderType } = await import('@polymarket/clob-client');
+        const res = await c.createAndPostOrder(
+          { tokenID: o.tokenId, price: o.price, size: o.size, side: o.side === 'BUY' ? Side.BUY : Side.SELL, expiration: Math.floor(o.expiresAt) },
+          { tickSize: String(o.tickSize), negRisk: o.negRisk },
+          OrderType.GTD,
+          false,
+          true, // post-only: rejected rather than executed as a taker
+        );
+        if (!res || res.success === false || res.error || !res.orderID) return { ok: false, error: String(res?.errorMsg || res?.error || 'ordre refusé').slice(0, 200) };
+        return { ok: true, id: res.orderID };
+      } catch (e) {
+        return { ok: false, error: String((e as Error)?.message || e).slice(0, 200) };
+      }
+    },
+    async status(id) {
+      try {
+        const c = await client(cfg);
+        const o = await c.getOrder(id);
+        if (!o || !o.id) return null;
+        return { matched: Number(o.size_matched) || 0, open: String(o.status).toLowerCase() === 'live' };
+      } catch {
+        return null;
+      }
+    },
+    async cancel(ids) {
+      if (!ids.length) return;
+      const c = await client(cfg);
+      await c.cancelOrders(ids);
+    },
+  };
 }
