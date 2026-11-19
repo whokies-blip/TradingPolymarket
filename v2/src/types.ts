@@ -83,6 +83,8 @@ export interface MmDesk {
   bornAt: number;
   /** Switched off from the dashboard: posts no new quotes, never evolved away, never copied by production. */
   off?: boolean;
+  /** Result of the last market this desk settled (trading + rewards). */
+  last?: { key: string; outcome: string; pnl: number; t: number };
 }
 
 export interface MmLiveOrder {

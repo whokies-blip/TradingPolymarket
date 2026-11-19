@@ -28,6 +28,8 @@ export interface Frame {
   spot: number | null;
   books: Record<'up' | 'down', { asks: [number, number][]; bids: [number, number][] }> | null;
   inventory: { desk: string; net: number; avg: number | null; unrealized: number | null; buyUp: string | null; buyDown: string | null }[];
+  /** Stock of finished markets whose winner Polymarket has not published yet. */
+  pending: { desk: string; start: number; net: number; ifUp: number; ifDown: number }[];
   live: { orders: { token: Side; side: string; price: number; left: number }[]; books: { up: number; down: number; cost: number }[] };
 }
 
@@ -434,10 +436,16 @@ export class Engine {
     const hadLive = !!this.state.mmLive.books[key];
     settleLive(this.state.mmLive, key, outcome, now);
     if (hadLive) this.store.audit('settle', { key, outcome, pnl: this.state.mmLive.pnl });
+    const parts: string[] = [];
     for (const d of this.state.desks) {
+      const had = !!d.mm.books[key];
       const r = settleMm(d.mm, key, outcome, now);
       if (outcome !== 'void') record(d.stats, r, 1, this.cfg.ewDecay);
+      d.last = { key, outcome, pnl: r, t: now };
+      if (had) parts.push(`${d.id} ${r >= 0 ? '+' : '−'}${Math.abs(r).toFixed(2)} $`);
     }
+    const hhmm = new Date(start * 1000).toISOString().slice(11, 16);
+    this.log('info', `Marché ${hhmm} UTC réglé : ${outcome === 'up' ? 'Hausse' : outcome === 'down' ? 'Baisse' : 'annulé'} · ${parts.length ? parts.join(' · ') : 'aucun stock'}.`);
     this.state.settledWindows++;
     this.state.recent.unshift({ key, asset, start, outcome });
     if (this.state.recent.length > 60) this.state.recent.length = 60;
@@ -478,6 +486,11 @@ export class Engine {
           buyDown: q?.ask && q.ask.left > 0 ? `${q.ask.left}@${(1 - q.ask.price).toFixed(2)}` : null,
         };
       }),
+      pending: this.state.desks.flatMap((d) =>
+        Object.entries(d.mm.books)
+          .filter(([k]) => k !== w?.key)
+          .map(([k, b]) => ({ desk: d.id, start: Number(k.split('-')[1]), net: round(b.net, 2), ifUp: round(b.cash + b.net + (b.rew ?? 0), 2), ifDown: round(b.cash + (b.rew ?? 0), 2) })),
+      ),
       live: {
         orders: this.state.mmLive.orders.map((o) => ({ token: o.token, side: o.side, price: o.price, left: round(o.size - o.matched, 2) })),
         books: Object.values(this.state.mmLive.books).map((b) => ({ up: round(b.up, 2), down: round(b.down, 2), cost: round(b.cost, 2) })),
@@ -502,7 +515,7 @@ export class Engine {
         return {
           id: d.id, parent: d.parent ?? null, genes: d.genes, markets: d.stats.n, perMarket: d.stats.n ? d.stats.sum / d.stats.n : null,
           se: Number.isFinite(sc.se) ? sc.se : null, tstat: d.stats.n >= 2 ? sc.tstat : null, total: d.mm.pnl + d.mm.rewards, rewards: d.mm.rewards,
-          fills: d.mm.fills, leader: d.id === leader?.id, enabled: !d.off, recent: d.mm.recent.slice(0, 8),
+          fills: d.mm.fills, leader: d.id === leader?.id, enabled: !d.off, last: d.last ?? null, recent: d.mm.recent.slice(0, 8),
         };
       }),
       live: {
