@@ -6,6 +6,9 @@ services:
     restart: unless-stopped        # relancé automatiquement après un plantage ou un redémarrage du serveur
     stop_grace_period: 20s         # le temps d'annuler les ordres réels et de sauvegarder
     env_file: ../.env
+    environment:                   # prioritaires sur .env : la base doit rester dans le volume
+      DB_PATH: /data/v2.db
+      PORT: "8080"
     volumes:
       - ./data:/data               # base SQLite conservée entre les mises à jour
     ports:
