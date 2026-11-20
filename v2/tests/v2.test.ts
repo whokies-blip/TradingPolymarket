@@ -115,3 +115,13 @@ test('hand settings: checked, separate Up/Down caps, candle ratio, manual desks 
   assert.ok(res && res.removed.id !== s.desks[0].id && s.desks[0].manual);
   assert.ok(Number.isFinite(res!.added.genes.maxDown));
 });
+
+test('take profit fires on the side held, never when off', async () => {
+  const { tpHit, checkGenes } = await import('../src/desks');
+  assert.equal(tpHit({ net: 10, avg: 0.5 }, 0.56, 0.1), true); // Up held at 50¢, now 56¢: +12 %
+  assert.equal(tpHit({ net: 10, avg: 0.5 }, 0.54, 0.1), false);
+  assert.equal(tpHit({ net: -10, avg: 0.4 }, 0.5, 0.2), true); // Down held at 40¢, Down now 50¢: +25 %
+  assert.equal(tpHit({ net: 10, avg: 0.5 }, 0.9, 0), false);
+  const r = checkGenes({ minPrice: 0.3, maxPrice: 0.8, minGain: 0.1, widen: 0, maxStock: 20, maxDown: 20, startAt: 10, stopAt: 240, stopLoss: 0.1 });
+  assert.ok('genes' in r && r.genes.takeProfit === 0);
+});

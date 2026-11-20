@@ -1,6 +1,6 @@
 import type { makeAlerts } from './alerts';
 import { WINDOW, type Config } from './config';
-import { capSizes, checkGenes, deskLeader, newMm, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, stopHit, stopOut, type Quotes } from './desks';
+import { capSizes, checkGenes, tpHit, deskLeader, newMm, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, stopHit, stopOut, type Quotes } from './desks';
 import { Heartbeat, keyConfigured, liveExchange, openOrders, UserFeed } from './exchange';
 import { BookFeed, SpotFeed } from './feeds';
 import { mulberry32, round } from './math';
@@ -9,7 +9,7 @@ import { fetchGeoblock, fetchOutcome, fetchWindows } from './polymarket';
 import { applyOrderUpdate, cancelOrders, liveDesk, mmLiveGate, mmLiveStep, newMmLive, settleLive, type Exchange } from './prodesk';
 import { emptyStats, record, score } from './stats';
 import type { Store } from './store';
-import type { Asset, LogEntry, MmLiveState, Settings, Side, State, WindowRec } from './types';
+import type { Asset, LogEntry, MmLiveState, MmGenes, Settings, Side, State, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
 const windowStartOf = (t: number) => Math.floor(t / WINDOW) * WINDOW;
@@ -66,6 +66,7 @@ export class Engine {
   constructor(private cfg: Config, private store: Store, private alert: ReturnType<typeof makeAlerts>) {
     this.state = store.loadState() ?? initState();
     Object.assign(this.cfg, this.state.settings ?? {});
+    if (this.state.settings?.single && this.state.settings.desk) this.ensureSingle(this.state.settings.desk, true);
     this.ex = liveExchange(cfg);
     this.heartbeat = new Heartbeat(cfg, (msg) => {
       this.log('error', msg);
@@ -162,6 +163,7 @@ export class Engine {
 
   /** New desk with settings typed by hand. */
   addDesk(input: Record<string, unknown>): string | null {
+    if (this.state.settings?.single) return 'Mode « un seul bureau » actif : décochez-le dans les réglages généraux pour en ajouter.';
     const r = checkGenes(input);
     if ('error' in r) return r.error;
     if (this.state.desks.length >= 30) return '30 bureaux au maximum.';
@@ -185,6 +187,28 @@ export class Engine {
     return null;
   }
 
+  /** One desk only, named "principal", with the given settings. Its results restart unless `keepStats`. */
+  private ensureSingle(genes: MmGenes, keepStats: boolean) {
+    const cur = this.state.desks.length === 1 && this.state.desks[0].id === 'principal' ? this.state.desks[0] : null;
+    if (cur) {
+      const changed = JSON.stringify(cur.genes) !== JSON.stringify(genes);
+      cur.genes = genes;
+      cur.manual = true;
+      cur.off = false;
+      if (changed && !keepStats) {
+        cur.stats = emptyStats();
+        cur.mm.pnl = 0;
+        cur.mm.rewards = 0;
+        cur.mm.markets = 0;
+        cur.mm.equity = [];
+        cur.last = undefined;
+      }
+    } else {
+      this.state.desks = [{ id: 'principal', gen: this.state.settledWindows, genes, mm: newMm(), stats: emptyStats(), bornAt: nowSec(), manual: true }];
+    }
+    this.quotes.clear();
+  }
+
   /** Engine settings changed from the dashboard; kept across restarts. */
   updateSettings(input: Record<string, unknown>): string | null {
     const num = (k: string, lo: number, hi: number, int = false) => {
@@ -205,12 +229,23 @@ export class Engine {
       set('mmRebate', num('mmRebate', 0, 1));
       if (typeof input.mmRefill === 'boolean') next.mmRefill = input.mmRefill;
       if (typeof input.mmEvolve === 'boolean') next.mmEvolve = input.mmEvolve;
+      if (typeof input.single === 'boolean') next.single = input.single;
+      if (input.desk && typeof input.desk === 'object') {
+        const r = checkGenes(input.desk as Record<string, unknown>);
+        if ('error' in r) return r.error;
+        next.desk = r.genes;
+      }
+      if (next.single && !next.desk) return 'Réglages du bureau manquants.';
     } catch (e) {
       return (e as Error).message;
     }
+    if (next.single) {
+      next.mmEvolve = false;
+      this.ensureSingle(next.desk!, input.keepStats === true);
+    }
     this.state.settings = next;
     Object.assign(this.cfg, next);
-    this.log('info', 'Réglages généraux modifiés.');
+    this.log('info', next.single ? 'Réglages modifiés : un seul bureau (« principal »).' : 'Réglages généraux modifiés.');
     this.save();
     return null;
   }
@@ -221,6 +256,7 @@ export class Engine {
     const fresh = initState();
     this.state = { ...fresh, mmLive: live, control: this.state.control, geo: this.state.geo, settings: this.state.settings };
     this.quotes.clear();
+    if (this.state.settings?.single && this.state.settings.desk) this.ensureSingle(this.state.settings.desk, false);
     this.log('info', 'Simulation remise à zéro.');
     this.save();
   }
@@ -372,13 +408,14 @@ export class Engine {
     // 2. Stops, once a second.
     if (newSecond) {
       for (const d of this.state.desks) {
-        if (!(d.genes.stopLoss > 0)) continue;
+        if (!(d.genes.stopLoss > 0) && !(d.genes.takeProfit! > 0)) continue;
         for (const a of cfg.mmAssets) {
           const w = this.windows.get(`${a}-${start}`);
           const top = w ? feed.best(w.upToken) : null;
           if (!w || top?.ask == null || top.bid == null) continue;
           const book = d.mm.books[w.key];
-          if (!stopHit(book, (top.ask + top.bid) / 2, d.genes.stopLoss)) continue;
+          const mid = (top.ask + top.bid) / 2;
+          if (!stopHit(book, mid, d.genes.stopLoss) && !tpHit(book, mid, d.genes.takeProfit)) continue;
           const side = book!.net > 0 ? w.upToken : w.downToken;
           if (stopOut(d.mm, w.key, a, feed.bids(side), w, this.quotesOf(d.id)[a]?.candle ?? 'flat', now) !== null) this.quotesOf(d.id)[a] = undefined;
         }
@@ -587,7 +624,7 @@ export class Engine {
       feeds: { binanceAgeMs: Date.now() - this.spot.lastMsg, polymarketAgeMs: this.book ? Date.now() - this.book.lastMsg : null, userChannel: this.userFeed?.connected ?? false, heartbeatAgeMs: this.heartbeat.lastOk ? Date.now() - this.heartbeat.lastOk : null },
       metrics: metrics.snapshot(),
       settledWindows: this.state.settledWindows,
-      settings: { mmSeconds: this.cfg.mmSeconds, mmSize: this.cfg.mmSize, mmRatio: this.cfg.mmRatio, mmRefill: this.cfg.mmRefill, mmEvolve: this.cfg.mmEvolve, mmEvolveEvery: this.cfg.mmEvolveEvery, mmRebate: this.cfg.mmRebate },
+      settings: { mmSeconds: this.cfg.mmSeconds, mmSize: this.cfg.mmSize, mmRatio: this.cfg.mmRatio, mmRefill: this.cfg.mmRefill, mmEvolve: this.cfg.mmEvolve, mmEvolveEvery: this.cfg.mmEvolveEvery, mmRebate: this.cfg.mmRebate, single: !!this.state.settings?.single, desk: this.state.settings?.desk ?? deskLeader(this.state.desks)?.genes ?? null },
       nextEvolveIn: Math.max(0, this.cfg.mmEvolveEvery - (this.state.settledWindows - this.state.desksEvolvedAt)),
       desks: this.state.desks.map((d) => {
         const sc = score(d.stats);

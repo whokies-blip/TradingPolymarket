@@ -44,14 +44,14 @@ export function capSizes(size: { bid: number; ask: number }, net: number, cap: n
 
 /** Limits for settings typed by hand on the dashboard (wider than what evolution explores). */
 export const EDIT_BOUNDS: Record<keyof MmGenes, [number, number]> = {
-  minPrice: [0.01, 0.99], maxPrice: [0.01, 0.99], minGain: [0, 5], widen: [0, 10], maxStock: [0, 1000], maxDown: [0, 1000], startAt: [0, 299], stopAt: [1, 300], stopLoss: [0, 0.99],
+  minPrice: [0.01, 0.99], maxPrice: [0.01, 0.99], minGain: [0, 5], widen: [0, 10], maxStock: [0, 1000], maxDown: [0, 1000], startAt: [0, 299], stopAt: [1, 300], stopLoss: [0, 0.99], takeProfit: [0, 5],
 };
 
 /** Check settings typed by hand. Returns the cleaned settings, or the reason they are refused. */
 export function checkGenes(input: Record<string, unknown>): { genes: MmGenes } | { error: string } {
   const g = {} as MmGenes;
   for (const k of Object.keys(EDIT_BOUNDS) as (keyof MmGenes)[]) {
-    const v = Number(input[k]);
+    const v = Number(input[k] ?? (k === 'takeProfit' ? 0 : undefined));
     const [lo, hi] = EDIT_BOUNDS[k];
     if (!Number.isFinite(v) || v < lo || v > hi) return { error: `${k} doit être entre ${lo} et ${hi}.` };
     g[k] = round(v, 4);
@@ -103,11 +103,11 @@ export function deskPrices(top: { bid: number; ask: number }, book: { net: numbe
 // ---------------------------------------------------------------- self-improving desks
 
 const GENE_BOUNDS: Record<keyof MmGenes, [number, number]> = {
-  minPrice: [0.2, 0.5], maxPrice: [0.7, 0.95], minGain: [0, 0.6], widen: [0, 3], maxStock: [10, 120], maxDown: [10, 120], startAt: [10, 150], stopAt: [120, 285], stopLoss: [0, 0.6],
+  minPrice: [0.2, 0.5], maxPrice: [0.7, 0.95], minGain: [0, 0.6], widen: [0, 3], maxStock: [10, 120], maxDown: [10, 120], takeProfit: [0, 0], startAt: [10, 150], stopAt: [120, 285], stopLoss: [0, 0.6],
 };
 
 function normaliseGenes(g: MmGenes): MmGenes {
-  const out = { ...g, maxDown: g.maxDown ?? g.maxStock };
+  const out = { ...g, maxDown: g.maxDown ?? g.maxStock, takeProfit: g.takeProfit ?? 0 };
   for (const k of Object.keys(GENE_BOUNDS) as (keyof MmGenes)[]) out[k] = round(clamp(out[k], GENE_BOUNDS[k][0], GENE_BOUNDS[k][1]), 2);
   out.maxPrice = Math.max(out.maxPrice, round(out.minPrice + 0.2, 2));
   out.maxStock = Math.round(out.maxStock);
@@ -151,6 +151,13 @@ export function stopHit(book: { net: number; avg?: number } | undefined, upMid: 
   if (!book || book.net === 0 || !(stopLoss > 0) || !book.avg) return false;
   const value = book.net > 0 ? upMid : 1 - upMid;
   return value <= book.avg * (1 - stopLoss);
+}
+
+/** Take profit: should the desk sell its whole stock now, the side held being worth `takeProfit` above its cost? */
+export function tpHit(book: { net: number; avg?: number } | undefined, upMid: number, takeProfit: number | undefined): boolean {
+  if (!book || book.net === 0 || !(takeProfit! > 0) || !book.avg) return false;
+  const value = book.net > 0 ? upMid : 1 - upMid;
+  return value >= book.avg * (1 + takeProfit!);
 }
 
 /**

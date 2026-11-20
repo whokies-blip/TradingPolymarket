@@ -17,6 +17,8 @@ Version autonome, pensée pour tourner **en permanence sur un serveur** : rapidi
 
 La logique de trading est la même : 8 bureaux simulés qui s'améliorent, et un bureau de production (argent réel) verrouillé par défaut.
 
+**Mode « un seul bureau »** (réglages généraux) : une seule stratégie, la vôtre — plage de prix d'achat, stocks max Hausse/Baisse, gain minimum à la revente, take profit (TP) et stop loss (SL) au marché, période de cotation — appliquée au bureau « principal ». Les autres bureaux et l'évolution automatique sont retirés. TP et SL sont simulés ; la production n'envoie pas de ventes au marché.
+
 **Tous les réglages se changent depuis le tableau de bord**, sans redémarrer :
 - par bureau (bouton « Modifier », ou « ＋ Nouveau bureau ») : prix d'achat min/max, stock Hausse max et stock Baisse max, gain minimum pour revendre, stop, période de cotation dans le marché, écartement selon l'agitation. Un bureau réglé à la main est marqué « Manuel » et n'est jamais remplacé par l'évolution ; ses résultats repartent de zéro sauf si vous cochez « Garder ses résultats » ;
 - réglages généraux : période des bougies, taille de base des ordres, multiplicateur de bougie, recharge immédiate, évolution automatique et sa fréquence, part des frais reversée.

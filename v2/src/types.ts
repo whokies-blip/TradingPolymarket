@@ -73,6 +73,8 @@ export interface MmGenes {
   stopLoss: number;
   /** Most Down shares held at once (defaults to maxStock). */
   maxDown?: number;
+  /** Take profit: sell the whole stock at market once it is worth this much above its cost (0 = never). */
+  takeProfit?: number;
 }
 
 export interface MmDesk {
@@ -166,4 +168,7 @@ export interface Settings {
   mmEvolve: boolean;
   mmEvolveEvery: number;
   mmRebate: number;
+  /** One desk only, set from the general settings. */
+  single: boolean;
+  desk: MmGenes;
 }
