@@ -71,6 +71,8 @@ export interface MmGenes {
   startAt: number;
   stopAt: number;
   stopLoss: number;
+  /** Most Down shares held at once (defaults to maxStock). */
+  maxDown?: number;
 }
 
 export interface MmDesk {
@@ -83,6 +85,8 @@ export interface MmDesk {
   bornAt: number;
   /** Switched off from the dashboard: posts no new quotes, never evolved away, never copied by production. */
   off?: boolean;
+  /** Settings set by hand: never replaced by evolution. */
+  manual?: boolean;
   /** Result of the last market this desk settled (trading + rewards). */
   last?: { key: string; outcome: string; pnl: number; t: number };
 }
@@ -147,6 +151,19 @@ export interface State {
   mmLive: MmLiveState;
   control: { liveArmed: boolean };
   geo?: { t: number; blocked: boolean; country: string };
+  /** Engine settings changed from the dashboard (override .env). */
+  settings?: Partial<Settings>;
   log: LogEntry[];
   recent: { key: string; asset: Asset; start: number; outcome: Side | 'void' }[];
+}
+
+/** Engine settings that can be changed live from the dashboard. */
+export interface Settings {
+  mmSeconds: number;
+  mmSize: number;
+  mmRatio: number;
+  mmRefill: boolean;
+  mmEvolve: boolean;
+  mmEvolveEvery: number;
+  mmRebate: number;
 }

@@ -17,6 +17,12 @@ Version autonome, pensée pour tourner **en permanence sur un serveur** : rapidi
 
 La logique de trading est la même : 8 bureaux simulés qui s'améliorent, et un bureau de production (argent réel) verrouillé par défaut.
 
+**Tous les réglages se changent depuis le tableau de bord**, sans redémarrer :
+- par bureau (bouton « Modifier », ou « ＋ Nouveau bureau ») : prix d'achat min/max, stock Hausse max et stock Baisse max, gain minimum pour revendre, stop, période de cotation dans le marché, écartement selon l'agitation. Un bureau réglé à la main est marqué « Manuel » et n'est jamais remplacé par l'évolution ; ses résultats repartent de zéro sauf si vous cochez « Garder ses résultats » ;
+- réglages généraux : période des bougies, taille de base des ordres, multiplicateur de bougie, recharge immédiate, évolution automatique et sa fréquence, part des frais reversée.
+
+Ces réglages sont enregistrés dans la base et passent avant ceux du fichier `.env`. Les limites de la production (argent réel) restent, elles, dans `.env`.
+
 Chaque bureau peut être **activé ou désactivé** depuis le tableau de bord (colonne « Actif »). Un bureau désactivé retire ses ordres tout de suite, garde son stock jusqu’à l’expiration du marché, n’est jamais remplacé par l’évolution et n’est jamais copié par la production.
 
 ## Lancer

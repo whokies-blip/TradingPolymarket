@@ -28,6 +28,11 @@
   button, input { font:inherit; } button { font-weight:600; padding:7px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; }
   button.primary { background:var(--text); color:var(--surface); } input { padding:7px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text); width:220px; max-width:100%; }
   .check { display:flex; gap:10px; padding:5px 0; border-bottom:1px solid var(--border); } .check span:nth-child(2) { flex:1; }
+  .form { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px 16px; margin:10px 0; }
+  .form label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--text2); }
+  .form label.chk { flex-direction:row; align-items:center; gap:8px; } .form input[type=number] { width:100%; }
+  .unit { color:var(--muted); font-size:12px; }
+  .form label.chk input, label.chk input { width:auto; } td.num { white-space:nowrap; } td button { padding:4px 9px; font-size:12px; }
   .log div { padding:4px 0; border-bottom:1px solid var(--border); font-size:13px; }
 </style>
 </head>
@@ -45,7 +50,9 @@
     <section class="card"><h2>Santé et latence</h2><div id="health" class="muted">—</div></section>
   </div>
 
-  <section class="card"><div class="row between"><h2>Bureaux (simulation)</h2><span class="sub" id="evolve"></span></div><div id="desks" class="tablewrap muted">—</div></section>
+  <section class="card"><div class="row between"><h2>Bureaux (simulation)</h2><div class="row"><span class="sub" id="evolve"></span><button id="newDesk">＋ Nouveau bureau</button></div></div><div id="desks" class="tablewrap muted">—</div></section>
+  <section class="card" id="editor" hidden></section>
+  <section class="card"><div class="row between"><h2>Réglages généraux</h2><span class="sub">valables pour tous les bureaux, appliqués tout de suite</span></div><div id="settings" class="muted">—</div></section>
   <section class="card"><h2>Inventaire en direct</h2><div id="inventory" class="tablewrap muted">—</div></section>
   <section class="card"><div class="row between"><h2>Production — argent réel</h2><span class="badge" id="liveBadge">—</span></div><div id="live" class="muted">—</div></section>
   <div class="grid">
@@ -107,9 +114,10 @@ function renderView() {
   $('health').className = '';
   $('health').innerHTML = `<p class="sub">En marche depuis ${Math.round(v.uptime / 60)} min · Binance il y a ${v.feeds.binanceAgeMs} ms · Polymarket il y a ${v.feeds.polymarketAgeMs ?? '—'} ms · canal privé ${v.feeds.userChannel ? 'connecté' : 'inactif'} · heartbeat ${v.feeds.heartbeatAgeMs === null ? 'inactif' : 'il y a ' + v.feeds.heartbeatAgeMs + ' ms'}</p>` +
     `<table><thead><tr><th>Mesure</th><th class="num">médiane</th><th class="num">95 %</th><th class="num">max</th></tr></thead><tbody>${Object.entries(lat).map(([k, s]) => `<tr><td>${esc(names[k] || k)}</td><td class="num">${s.p50} ms</td><td class="num">${s.p95} ms</td><td class="num">${s.max} ms</td></tr>`).join('')}</tbody></table>`;
+  renderSettings(v.settings);
   $('evolve').textContent = `${v.settledWindows} marchés réglés · prochaine évolution dans ${v.nextEvolveIn} marchés`;
   $('desks').className = 'tablewrap';
-  $('desks').innerHTML = `<table><thead><tr><th>Bureau</th><th>Achète entre</th><th class="num">Gain min.</th><th class="num">Stop</th><th class="num">Stock max</th><th>Cote de</th><th class="num">Marchés</th><th class="num">Moyenne / marché</th><th class="num">± incertitude</th><th class="num">Dernier marché</th><th class="num">Total</th><th>Actif</th></tr></thead><tbody>${v.desks.map((d) => `<tr${d.enabled ? '' : ' class="muted"'}><td>${esc(d.id)} ${d.leader ? '<span class="badge good">En tête</span>' : ''}${d.enabled ? '' : ' <span class="badge bad">Désactivé</span>'}</td><td>${Math.round(d.genes.minPrice * 100)}–${Math.round(d.genes.maxPrice * 100)}¢</td><td class="num">${Math.round(d.genes.minGain * 100)} %</td><td class="num">${d.genes.stopLoss ? '−' + Math.round(d.genes.stopLoss * 100) + ' %' : 'aucun'}</td><td class="num">${d.genes.maxStock}</td><td>${d.genes.startAt}–${d.genes.stopAt} s</td><td class="num">${d.markets}</td><td class="num ${cls(d.perMarket || 0)}">${d.perMarket === null ? '—' : signed(d.perMarket)}</td><td class="num">${d.se === null ? '—' : '± ' + usd(d.se)}</td><td class="num ${d.last ? cls(d.last.pnl) : ''}">${d.last ? signed(d.last.pnl) : '—'}</td><td class="num ${cls(d.total)}">${signed(d.total)}</td><td><button data-desk="${esc(d.id)}" data-on="${d.enabled ? '0' : '1'}">${d.enabled ? 'Désactiver' : 'Activer'}</button></td></tr>`).join('')}</tbody></table>`;
+  $('desks').innerHTML = `<table><thead><tr><th>Bureau</th><th>Achète entre</th><th class="num">Gain min.</th><th class="num">Stop</th><th class="num">Stock max (Hausse / Baisse)</th><th>Cote de</th><th class="num">Marchés</th><th class="num">Moyenne / marché</th><th class="num">± incertitude</th><th class="num">Dernier marché</th><th class="num">Total</th><th>Actions</th></tr></thead><tbody>${v.desks.map((d) => `<tr${d.enabled ? '' : ' class="muted"'}><td>${esc(d.id)} ${d.leader ? '<span class="badge good">En tête</span>' : ''}${d.manual ? ' <span class="badge warn">Manuel</span>' : ''}${d.enabled ? '' : ' <span class="badge bad">Désactivé</span>'}</td><td>${Math.round(d.genes.minPrice * 100)}–${Math.round(d.genes.maxPrice * 100)}¢</td><td class="num">${Math.round(d.genes.minGain * 100)} %</td><td class="num">${d.genes.stopLoss ? '−' + Math.round(d.genes.stopLoss * 100) + ' %' : 'aucun'}</td><td class="num">${d.genes.maxStock} ▲ / ${d.genes.maxDown ?? d.genes.maxStock} ▼</td><td>${d.genes.startAt}–${d.genes.stopAt} s</td><td class="num">${d.markets}</td><td class="num ${cls(d.perMarket || 0)}">${d.perMarket === null ? '—' : signed(d.perMarket)}</td><td class="num">${d.se === null ? '—' : '± ' + usd(d.se)}</td><td class="num ${d.last ? cls(d.last.pnl) : ''}">${d.last ? signed(d.last.pnl) : '—'}</td><td class="num ${cls(d.total)}">${signed(d.total)}</td><td><div class="row" style="flex-wrap:nowrap"><button data-edit="${esc(d.id)}">Modifier</button><button data-desk="${esc(d.id)}" data-on="${d.enabled ? '0' : '1'}">${d.enabled ? 'Désactiver' : 'Activer'}</button></div></td></tr>`).join('')}</tbody></table>`;
   const L = v.live, open = L.gate.every((g) => g.ok);
   $('liveBadge').textContent = open ? 'Actif : ordres réels' : 'Bloqué : aucun ordre réel';
   $('liveBadge').className = 'badge ' + (open ? 'good' : 'warn');
@@ -140,6 +148,91 @@ $('desks').addEventListener('click', async (e) => {
   const v2 = await fetch('/api/view', { headers: { authorization: 'Bearer ' + token } });
   if (v2.ok) { view = await v2.json(); renderView(); }
 });
+// ---------------------------------------------------------------- hand settings
+const post = async (body) => {
+  const r = await fetch('/api/control', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+  if (!r.ok) { alert((await r.json()).error || 'Erreur'); return false; }
+  const v2 = await fetch('/api/view', { headers: { authorization: 'Bearer ' + token } });
+  if (v2.ok) { view = await v2.json(); renderView(); }
+  return true;
+};
+const field = (k, label, unit, value, step, help) => `<label>${label} <span class="unit">(${unit})</span><input type="number" step="${step}" name="${k}" value="${value}" />${help ? `<span class="unit">${help}</span>` : ''}</label>`;
+// [key, label, unit, scale shown = value × scale, step, help]
+const GENES = [
+  ['minPrice', 'Prix d’achat minimum', '¢', 100, 1, 'n’achète jamais une part (Hausse ou Baisse) moins cher'],
+  ['maxPrice', 'Prix d’achat maximum', '¢', 100, 1, 'n’achète jamais une part plus cher'],
+  ['maxStock', 'Stock Hausse maximum', 'parts', 1, 1, 'au-delà, n’achète plus de Hausse'],
+  ['maxDown', 'Stock Baisse maximum', 'parts', 1, 1, 'au-delà, n’achète plus de Baisse'],
+  ['minGain', 'Gain minimum pour revendre', '%', 100, 1, 'ne revend son stock qu’au-dessus de son prix moyen + ce %'],
+  ['stopLoss', 'Stop (vente à perte)', '%', 100, 1, '0 = jamais ; sinon revend tout si le stock perd ce %'],
+  ['startAt', 'Commence à coter après', 's', 1, 1, 'secondes après l’ouverture du marché (0–299)'],
+  ['stopAt', 'Arrête de coter à', 's', 1, 1, 'secondes après l’ouverture (≤ 300)'],
+  ['widen', 'Écartement selon l’agitation', '×', 1, 0.1, '0 = toujours au meilleur prix ; 2 = s’écarte de 2 × le mouvement récent'],
+];
+let editing = null; // { id } or { id: null } for a new desk
+function openEditor(id) {
+  const d = id ? view.desks.find((x) => x.id === id) : null;
+  const base = d ? d.genes : (view.desks.find((x) => x.leader) || view.desks[0]).genes;
+  const g = { ...base, maxDown: base.maxDown ?? base.maxStock };
+  editing = { id };
+  const e = $('editor');
+  e.hidden = false;
+  e.innerHTML = `<h2>${d ? `Modifier le bureau ${esc(d.id)}` : 'Nouveau bureau'}</h2>` +
+    `<form id="geneForm"><div class="form">${GENES.map(([k, l, u, sc, st, h]) => field(k, l, u, Math.round(g[k] * sc * 100) / 100, st, h)).join('')}</div>` +
+    (d ? `<label class="chk" style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" name="keepStats" /> Garder ses résultats actuels (sinon ils repartent de zéro, car ils ont été obtenus avec d’autres réglages)</label>` : '') +
+    `<p class="sub">Un bureau réglé à la main est marqué « Manuel » : l’évolution automatique ne le remplace jamais.</p>` +
+    `<div class="row"><button class="primary" type="submit">${d ? 'Enregistrer' : 'Créer le bureau'}</button>${d ? '<button type="button" id="saveAsNew">Enregistrer comme nouveau bureau</button><button type="button" id="delDesk">Supprimer ce bureau</button>' : ''}<button type="button" id="cancelEdit">Annuler</button></div></form>`;
+  const read = () => {
+    const f = $('geneForm');
+    const out = {};
+    for (const [k, , , sc] of GENES) out[k] = Number(f.elements[k].value) / sc;
+    return out;
+  };
+  const close = () => { e.hidden = true; e.innerHTML = ''; editing = null; };
+  $('geneForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const ok = d ? await post({ action: 'desk-update', desk: d.id, genes: read(), keepStats: $('geneForm').elements.keepStats.checked }) : await post({ action: 'desk-add', genes: read() });
+    if (ok) close();
+  };
+  $('cancelEdit').onclick = close;
+  if (d) {
+    $('saveAsNew').onclick = async () => { if (await post({ action: 'desk-add', genes: read() })) close(); };
+    $('delDesk').onclick = async () => { if (confirm(`Supprimer le bureau ${d.id} ? Son stock et ses résultats disparaissent.`) && await post({ action: 'desk-remove', desk: d.id })) close(); };
+  }
+  e.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+$('newDesk').onclick = () => view && openEditor(null);
+$('desks').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-edit]');
+  if (b) openEditor(b.dataset.edit);
+});
+const SETTINGS = [
+  ['mmSeconds', 'Période des bougies', 's', 1, 1, 'durée de la bougie Binance qui décide du sens (2–110)'],
+  ['mmSize', 'Taille de base des ordres', 'parts', 1, 1, 'taille d’un ordre quand la bougie est plate'],
+  ['mmRatio', 'Multiplicateur de bougie', '×', 1, 0.1, 'bougie verte : achats Hausse × ce nombre ; rouge : achats Baisse × ce nombre'],
+  ['mmEvolveEvery', 'Évolution tous les', 'marchés', 1, 1, '12 ≈ une heure'],
+  ['mmRebate', 'Part des frais des preneurs reversée', '%', 100, 1, 'récompense Polymarket des teneurs de marché (20 % aujourd’hui)'],
+];
+let settingsShown = '';
+function renderSettings(st) {
+  const key = JSON.stringify(st);
+  if (key === settingsShown || document.activeElement?.closest?.('#settings')) return;
+  settingsShown = key;
+  $('settings').className = '';
+  $('settings').innerHTML = `<form id="setForm"><div class="form">${SETTINGS.map(([k, l, u, sc, step, h]) => field(k, l, u, Math.round(st[k] * sc * 100) / 100, step, h)).join('')}` +
+    `<label class="chk"><input type="checkbox" name="mmRefill" ${st.mmRefill ? 'checked' : ''}/> Reposer aussitôt un ordre exécuté (sans attendre la bougie suivante)</label>` +
+    `<label class="chk"><input type="checkbox" name="mmEvolve" ${st.mmEvolve ? 'checked' : ''}/> Évolution automatique (remplace le moins bon bureau non manuel)</label></div>` +
+    `<div class="row"><button class="primary" type="submit">Enregistrer les réglages</button></div></form>`;
+  $('setForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = $('setForm');
+    const out = { mmRefill: f.elements.mmRefill.checked, mmEvolve: f.elements.mmEvolve.checked };
+    for (const [k, , , sc] of SETTINGS) out[k] = Number(f.elements[k].value) / sc;
+    settingsShown = '';
+    document.activeElement?.blur?.();
+    await post({ action: 'settings', settings: out });
+  };
+}
 if (token) connect();
 </script>
 </body>

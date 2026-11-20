@@ -27,9 +27,9 @@ export interface Quotes {
  * Sizes from the last 5-second candle of the spot price: after a green candle the desk bids for twice
  * what it offers, after a red one it offers twice what it bids.
  */
-export function quoteSizes(open: number, close: number, base: number): { candle: MmFill['candle']; bid: number; ask: number } {
-  if (close > open) return { candle: 'green', bid: 2 * base, ask: base };
-  if (close < open) return { candle: 'red', bid: base, ask: 2 * base };
+export function quoteSizes(open: number, close: number, base: number, ratio = 2): { candle: MmFill['candle']; bid: number; ask: number } {
+  if (close > open) return { candle: 'green', bid: round(ratio * base, 2), ask: base };
+  if (close < open) return { candle: 'red', bid: base, ask: round(ratio * base, 2) };
   return { candle: 'flat', bid: base, ask: base };
 }
 
@@ -38,8 +38,31 @@ export function quoteSizes(open: number, close: number, base: number): { candle:
  * cap the desk stops bidding for that side altogether and only quotes the side that reduces it.
  * (On 4 days of history a 20-share cap cut the swings from ±28 $ to ±6 $ per market.)
  */
-export function capSizes(size: { bid: number; ask: number }, net: number, cap: number): { bid: number; ask: number } {
-  return { bid: Math.max(0, Math.min(size.bid, cap - net)), ask: Math.max(0, Math.min(size.ask, cap + net)) };
+export function capSizes(size: { bid: number; ask: number }, net: number, cap: number, capDown = cap): { bid: number; ask: number } {
+  return { bid: Math.max(0, Math.min(size.bid, cap - net)), ask: Math.max(0, Math.min(size.ask, capDown + net)) };
+}
+
+/** Limits for settings typed by hand on the dashboard (wider than what evolution explores). */
+export const EDIT_BOUNDS: Record<keyof MmGenes, [number, number]> = {
+  minPrice: [0.01, 0.99], maxPrice: [0.01, 0.99], minGain: [0, 5], widen: [0, 10], maxStock: [0, 1000], maxDown: [0, 1000], startAt: [0, 299], stopAt: [1, 300], stopLoss: [0, 0.99],
+};
+
+/** Check settings typed by hand. Returns the cleaned settings, or the reason they are refused. */
+export function checkGenes(input: Record<string, unknown>): { genes: MmGenes } | { error: string } {
+  const g = {} as MmGenes;
+  for (const k of Object.keys(EDIT_BOUNDS) as (keyof MmGenes)[]) {
+    const v = Number(input[k]);
+    const [lo, hi] = EDIT_BOUNDS[k];
+    if (!Number.isFinite(v) || v < lo || v > hi) return { error: `${k} doit être entre ${lo} et ${hi}.` };
+    g[k] = round(v, 4);
+  }
+  if (g.minPrice >= g.maxPrice) return { error: 'Le prix d’achat minimum doit être inférieur au maximum.' };
+  if (g.startAt >= g.stopAt) return { error: 'Le début de la cotation doit précéder la fin.' };
+  g.maxStock = Math.round(g.maxStock);
+  g.maxDown = Math.round(g.maxDown!);
+  g.startAt = Math.round(g.startAt);
+  g.stopAt = Math.round(g.stopAt);
+  return { genes: g };
 }
 
 export interface DeskPrices {
@@ -80,14 +103,15 @@ export function deskPrices(top: { bid: number; ask: number }, book: { net: numbe
 // ---------------------------------------------------------------- self-improving desks
 
 const GENE_BOUNDS: Record<keyof MmGenes, [number, number]> = {
-  minPrice: [0.2, 0.5], maxPrice: [0.7, 0.95], minGain: [0, 0.6], widen: [0, 3], maxStock: [10, 120], startAt: [10, 150], stopAt: [120, 285], stopLoss: [0, 0.6],
+  minPrice: [0.2, 0.5], maxPrice: [0.7, 0.95], minGain: [0, 0.6], widen: [0, 3], maxStock: [10, 120], maxDown: [10, 120], startAt: [10, 150], stopAt: [120, 285], stopLoss: [0, 0.6],
 };
 
 function normaliseGenes(g: MmGenes): MmGenes {
-  const out = { ...g };
+  const out = { ...g, maxDown: g.maxDown ?? g.maxStock };
   for (const k of Object.keys(GENE_BOUNDS) as (keyof MmGenes)[]) out[k] = round(clamp(out[k], GENE_BOUNDS[k][0], GENE_BOUNDS[k][1]), 2);
   out.maxPrice = Math.max(out.maxPrice, round(out.minPrice + 0.2, 2));
   out.maxStock = Math.round(out.maxStock);
+  out.maxDown = Math.round(out.maxDown!);
   out.startAt = Math.round(out.startAt);
   out.stopAt = Math.round(Math.max(out.stopAt, out.startAt + 60));
   if (out.stopLoss < 0.05) out.stopLoss = 0;
@@ -166,12 +190,12 @@ export function deskLeader(all: MmDesk[]): MmDesk | null {
  * changed copy of the leader. Called about once an hour.
  */
 export function evolveDesks(desks: MmDesk[], generation: number, rand: () => number, now: number, minMarkets = 20): { removed: MmDesk; added: MmDesk } | null {
-  const ripe = desks.filter((d) => !d.off && d.stats.n >= minMarkets);
+  const ripe = desks.filter((d) => !d.off && !d.manual && d.stats.n >= minMarkets);
   if (ripe.length < 2) return null;
   const leader = deskLeader(desks)!;
   const worst = [...ripe].sort((a, b) => score(a.stats).mean - score(b.stats).mean)[0];
   if (worst.id === leader.id || score(worst.stats).mean >= score(leader.stats).mean) return null;
-  const genes = { ...leader.genes };
+  const genes = { ...leader.genes, maxDown: leader.genes.maxDown ?? leader.genes.maxStock };
   for (const k of Object.keys(GENE_BOUNDS) as (keyof MmGenes)[]) {
     if (rand() < 0.6) genes[k] += (rand() - 0.5) * 0.3 * (GENE_BOUNDS[k][1] - GENE_BOUNDS[k][0]);
   }

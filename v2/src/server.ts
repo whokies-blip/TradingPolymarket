@@ -12,7 +12,8 @@ const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf
  *   GET  /                  dashboard (asks for the admin token)
  *   GET  /api/view?token=   full state
  *   GET  /api/stream?token= server-sent events: a frame 5×/s, the full view every 5 s
- *   POST /api/control       {"action": "arm" | "disarm" | "reset"} or {"action": "desk", "desk": id, "on": bool} with Authorization: Bearer <token>
+ *   POST /api/control       {"action": "arm" | "disarm" | "reset"}, {"action": "desk", "desk": id, "on": bool},
+ *                          desk-update {desk, genes, keepStats}, desk-add {genes}, desk-remove {desk}, settings {settings} with Authorization: Bearer <token>
  */
 export function startServer(cfg: Config, engine: Engine) {
   const same = (a: string, b: string) => {
@@ -56,7 +57,12 @@ export function startServer(cfg: Config, engine: Engine) {
       if (url.pathname === '/api/control' && req.method === 'POST') {
         let body = '';
         for await (const chunk of req) body += chunk;
-        const { action, desk, on } = JSON.parse(body || '{}') as { action?: string; desk?: string; on?: boolean };
+        const { action, desk, on, genes, keepStats, settings } = JSON.parse(body || '{}') as { action?: string; desk?: string; on?: boolean; genes?: Record<string, unknown>; keepStats?: boolean; settings?: Record<string, unknown> };
+        const fail = (err: string | null) => (err ? json(res, 400, { error: err }) : json(res, 200, { ok: true }));
+        if (action === 'desk-update') return fail(engine.updateDesk(String(desk), genes ?? {}, keepStats === true));
+        if (action === 'desk-add') return fail(engine.addDesk(genes ?? {}));
+        if (action === 'desk-remove') return fail(engine.removeDesk(String(desk)));
+        if (action === 'settings') return fail(engine.updateSettings(settings ?? {}));
         if (action === 'arm') {
           if (!cfg.mmLive) return json(res, 400, { error: 'Production non activée (MM_LIVE=true).' });
           engine.setArmed(true);

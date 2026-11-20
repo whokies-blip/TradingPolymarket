@@ -1,15 +1,15 @@
 import type { makeAlerts } from './alerts';
 import { WINDOW, type Config } from './config';
-import { capSizes, deskLeader, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, stopHit, stopOut, type Quotes } from './desks';
+import { capSizes, checkGenes, deskLeader, newMm, deskPrices, evolveDesks, onTrade, quoteSizes, recentMove, seedDesks, settleMm, stopHit, stopOut, type Quotes } from './desks';
 import { Heartbeat, keyConfigured, liveExchange, openOrders, UserFeed } from './exchange';
 import { BookFeed, SpotFeed } from './feeds';
 import { mulberry32, round } from './math';
 import { metrics } from './metrics';
 import { fetchGeoblock, fetchOutcome, fetchWindows } from './polymarket';
 import { applyOrderUpdate, cancelOrders, liveDesk, mmLiveGate, mmLiveStep, newMmLive, settleLive, type Exchange } from './prodesk';
-import { record, score } from './stats';
+import { emptyStats, record, score } from './stats';
 import type { Store } from './store';
-import type { Asset, LogEntry, MmLiveState, Side, State, WindowRec } from './types';
+import type { Asset, LogEntry, MmLiveState, Settings, Side, State, WindowRec } from './types';
 
 const nowSec = () => Date.now() / 1000;
 const windowStartOf = (t: number) => Math.floor(t / WINDOW) * WINDOW;
@@ -65,6 +65,7 @@ export class Engine {
 
   constructor(private cfg: Config, private store: Store, private alert: ReturnType<typeof makeAlerts>) {
     this.state = store.loadState() ?? initState();
+    Object.assign(this.cfg, this.state.settings ?? {});
     this.ex = liveExchange(cfg);
     this.heartbeat = new Heartbeat(cfg, (msg) => {
       this.log('error', msg);
@@ -137,11 +138,88 @@ export class Engine {
     return true;
   }
 
+  /** Change a desk's settings by hand. Its results restart from zero unless `keepStats`; its open stock is kept. */
+  updateDesk(id: string, input: Record<string, unknown>, keepStats = false): string | null {
+    const d = this.state.desks.find((x) => x.id === id);
+    if (!d) return 'Bureau inconnu.';
+    const r = checkGenes(input);
+    if ('error' in r) return r.error;
+    d.genes = r.genes;
+    d.manual = true;
+    if (!keepStats) {
+      d.stats = emptyStats();
+      d.mm.pnl = 0;
+      d.mm.rewards = 0;
+      d.mm.markets = 0;
+      d.mm.equity = [];
+      d.last = undefined;
+    }
+    this.quotes.delete(id);
+    this.log('info', `Bureau ${id} modifié à la main${keepStats ? '' : ' (résultats remis à zéro)'}.`);
+    this.save();
+    return null;
+  }
+
+  /** New desk with settings typed by hand. */
+  addDesk(input: Record<string, unknown>): string | null {
+    const r = checkGenes(input);
+    if ('error' in r) return r.error;
+    if (this.state.desks.length >= 30) return '30 bureaux au maximum.';
+    let n = 1;
+    while (this.state.desks.some((d) => d.id === `m${n}`)) n++;
+    const now = nowSec();
+    this.state.desks.push({ id: `m${n}`, gen: this.state.settledWindows, genes: r.genes, mm: newMm(), stats: emptyStats(), bornAt: now, manual: true });
+    this.log('info', `Bureau m${n} créé à la main.`);
+    this.save();
+    return null;
+  }
+
+  removeDesk(id: string): string | null {
+    const i = this.state.desks.findIndex((x) => x.id === id);
+    if (i < 0) return 'Bureau inconnu.';
+    if (this.state.desks.length <= 1) return 'Il faut garder au moins un bureau.';
+    this.state.desks.splice(i, 1);
+    this.quotes.delete(id);
+    this.log('info', `Bureau ${id} supprimé.`);
+    this.save();
+    return null;
+  }
+
+  /** Engine settings changed from the dashboard; kept across restarts. */
+  updateSettings(input: Record<string, unknown>): string | null {
+    const num = (k: string, lo: number, hi: number, int = false) => {
+      if (input[k] === undefined) return undefined;
+      const v = Number(input[k]);
+      if (!Number.isFinite(v) || v < lo || v > hi) throw new Error(`${k} doit être entre ${lo} et ${hi}.`);
+      return int ? Math.round(v) : v;
+    };
+    const next: Partial<Settings> = { ...(this.state.settings ?? {}) };
+    try {
+      const set = <K extends keyof Settings>(k: K, v: Settings[K] | undefined) => {
+        if (v !== undefined) next[k] = v;
+      };
+      set('mmSeconds', num('mmSeconds', 2, 110, true));
+      set('mmSize', num('mmSize', 1, 1000));
+      set('mmRatio', num('mmRatio', 1, 10));
+      set('mmEvolveEvery', num('mmEvolveEvery', 1, 1000, true));
+      set('mmRebate', num('mmRebate', 0, 1));
+      if (typeof input.mmRefill === 'boolean') next.mmRefill = input.mmRefill;
+      if (typeof input.mmEvolve === 'boolean') next.mmEvolve = input.mmEvolve;
+    } catch (e) {
+      return (e as Error).message;
+    }
+    this.state.settings = next;
+    Object.assign(this.cfg, next);
+    this.log('info', 'Réglages généraux modifiés.');
+    this.save();
+    return null;
+  }
+
   resetSimulation() {
     // Real-money records are never wiped.
     const live: MmLiveState = this.state.mmLive;
     const fresh = initState();
-    this.state = { ...fresh, mmLive: live, control: this.state.control, geo: this.state.geo };
+    this.state = { ...fresh, mmLive: live, control: this.state.control, geo: this.state.geo, settings: this.state.settings };
     this.quotes.clear();
     this.log('info', 'Simulation remise à zéro.');
     this.save();
@@ -317,7 +395,7 @@ export class Engine {
           const top = feed.best(w.upToken);
           if (top.ask === null || top.bid === null || top.ask - top.bid > 0.05 || top.bid < 0.05 || top.ask > 0.95) continue;
           const book = d.mm.books[w.key];
-          const room = capSizes(q.sizes, book?.net ?? 0, d.genes.maxStock);
+          const room = capSizes(q.sizes, book?.net ?? 0, d.genes.maxStock, d.genes.maxDown ?? d.genes.maxStock);
           const px = deskPrices({ bid: top.bid, ask: top.ask }, book, d.genes, recentMove(this.mids[a], cfg.mmSeconds));
           if (q.bid && q.bid.left <= 0 && room.bid > 0 && px.bidAllowed) q.bid = { price: px.bid, left: room.bid, queue: feed.sizeAt(w.upToken, 'bid', px.bid) };
           if (q.ask && q.ask.left <= 0 && room.ask > 0 && px.askAllowed) q.ask = { price: px.ask, left: room.ask, queue: feed.sizeAt(w.upToken, 'ask', px.ask) };
@@ -335,14 +413,14 @@ export class Engine {
       const close = this.spot.last[a];
       const top = w ? feed.best(w.upToken) : null;
       const usable = !!w && !!top && top.ask !== null && top.bid !== null && !!open && !!close && el >= 10 && el <= 285 && top.ask - top.bid <= 0.05 && top.bid >= 0.05 && top.ask <= 0.95;
-      const size = usable ? quoteSizes(open!, close!, cfg.mmSize) : null;
+      const size = usable ? quoteSizes(open!, close!, cfg.mmSize, cfg.mmRatio) : null;
       const vol = recentMove(this.mids[a], cfg.mmSeconds);
       for (const d of this.state.desks) {
         const dq = this.quotesOf(d.id);
         dq[a] = undefined;
         if (d.off || !usable || !size || el < d.genes.startAt || el > d.genes.stopAt) continue;
         const book = d.mm.books[w!.key];
-        const capped = capSizes(size, book?.net ?? 0, d.genes.maxStock);
+        const capped = capSizes(size, book?.net ?? 0, d.genes.maxStock, d.genes.maxDown ?? d.genes.maxStock);
         const px = deskPrices({ bid: top!.bid!, ask: top!.ask! }, book, d.genes, vol);
         dq[a] = {
           key: w!.key, asset: a, candle: size.candle, sizes: { bid: size.bid, ask: size.ask },
@@ -381,7 +459,7 @@ export class Engine {
     void mmLiveStep({
       state: this.state, cfg, ex: this.ex, now, gateOpen, win: w, genes: desk?.genes ?? null,
       top: usable ? { bid: top!.bid!, ask: top!.ask! } : null, vol: recentMove(this.mids[a], cfg.mmSeconds),
-      sizes: open && close ? quoteSizes(open, close, cfg.mmSize) : null,
+      sizes: open && close ? quoteSizes(open, close, cfg.mmSize, cfg.mmRatio) : null,
     })
       .then(() => {
         // Anything that touched real money is written at once.
@@ -449,7 +527,7 @@ export class Engine {
     this.state.settledWindows++;
     this.state.recent.unshift({ key, asset, start, outcome });
     if (this.state.recent.length > 60) this.state.recent.length = 60;
-    if (this.state.settledWindows - this.state.desksEvolvedAt >= this.cfg.mmEvolveEvery) {
+    if (this.cfg.mmEvolve && this.state.settledWindows - this.state.desksEvolvedAt >= this.cfg.mmEvolveEvery) {
       this.state.desksEvolvedAt = this.state.settledWindows;
       const res = evolveDesks(this.state.desks, this.state.settledWindows, mulberry32(Math.floor(now)), now);
       if (res) this.log('info', `Évolution : ${res.removed.id} remplacé par ${res.added.id}, variante de ${res.added.parent}.`);
@@ -509,13 +587,14 @@ export class Engine {
       feeds: { binanceAgeMs: Date.now() - this.spot.lastMsg, polymarketAgeMs: this.book ? Date.now() - this.book.lastMsg : null, userChannel: this.userFeed?.connected ?? false, heartbeatAgeMs: this.heartbeat.lastOk ? Date.now() - this.heartbeat.lastOk : null },
       metrics: metrics.snapshot(),
       settledWindows: this.state.settledWindows,
+      settings: { mmSeconds: this.cfg.mmSeconds, mmSize: this.cfg.mmSize, mmRatio: this.cfg.mmRatio, mmRefill: this.cfg.mmRefill, mmEvolve: this.cfg.mmEvolve, mmEvolveEvery: this.cfg.mmEvolveEvery, mmRebate: this.cfg.mmRebate },
       nextEvolveIn: Math.max(0, this.cfg.mmEvolveEvery - (this.state.settledWindows - this.state.desksEvolvedAt)),
       desks: this.state.desks.map((d) => {
         const sc = score(d.stats);
         return {
           id: d.id, parent: d.parent ?? null, genes: d.genes, markets: d.stats.n, perMarket: d.stats.n ? d.stats.sum / d.stats.n : null,
           se: Number.isFinite(sc.se) ? sc.se : null, tstat: d.stats.n >= 2 ? sc.tstat : null, total: d.mm.pnl + d.mm.rewards, rewards: d.mm.rewards,
-          fills: d.mm.fills, leader: d.id === leader?.id, enabled: !d.off, last: d.last ?? null, recent: d.mm.recent.slice(0, 8),
+          fills: d.mm.fills, leader: d.id === leader?.id, enabled: !d.off, last: d.last ?? null, manual: !!d.manual, recent: d.mm.recent.slice(0, 8),
         };
       }),
       live: {

@@ -98,3 +98,20 @@ test('a desk switched off is never the leader, never evolved away, never copied 
   assert.ok(res && res.removed.id !== worst.id && res.removed.id !== best.id);
   assert.ok(s.desks.includes(worst) && s.desks.includes(best));
 });
+
+test('hand settings: checked, separate Up/Down caps, candle ratio, manual desks never evolved away', async () => {
+  const { checkGenes, capSizes, quoteSizes, evolveDesks } = await import('../src/desks');
+  const ok = checkGenes({ minPrice: 0.3, maxPrice: 0.8, minGain: 0.1, widen: 1, maxStock: 50, maxDown: 10, startAt: 20, stopAt: 250, stopLoss: 0 });
+  assert.ok('genes' in ok && ok.genes.maxDown === 10);
+  assert.ok('error' in checkGenes({ minPrice: 0.8, maxPrice: 0.3, minGain: 0, widen: 0, maxStock: 1, maxDown: 1, startAt: 0, stopAt: 100, stopLoss: 0 }));
+  assert.ok('error' in checkGenes({ minPrice: 0.3 }));
+  // Holding 8 Down (net −8) with a Down cap of 10: only 2 more Down may be bought; Up side capped at 50.
+  assert.deepEqual(capSizes({ bid: 20, ask: 20 }, -8, 50, 10), { bid: 20, ask: 2 });
+  assert.deepEqual(quoteSizes(1, 2, 10, 3), { candle: 'green', bid: 30, ask: 10 });
+  const s = initState();
+  s.desks.forEach((d, i) => { d.stats.n = 30; d.stats.sum = 30 * (i - 3); d.stats.sumSq = 30 * (i - 3) ** 2 + 30; });
+  s.desks[0].manual = true; // worst desk, but set by hand
+  const res = evolveDesks(s.desks, 99, () => 0.5, 0);
+  assert.ok(res && res.removed.id !== s.desks[0].id && s.desks[0].manual);
+  assert.ok(Number.isFinite(res!.added.genes.maxDown));
+});

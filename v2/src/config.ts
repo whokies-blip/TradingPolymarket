@@ -22,8 +22,11 @@ export const config = () => ({
   mmAssets: (process.env.MM_ASSETS || 'btc').split(',').map((x) => x.trim()).filter((x): x is Asset => x === 'btc' || x === 'eth'),
   mmSize: num('MM_SIZE', 10),
   mmSeconds: Math.max(2, num('MM_CANDLE_SECONDS', 5)),
+  /** After a green (red) candle the desks bid (offer) this many times the base size. */
+  mmRatio: num('MM_CANDLE_RATIO', 2),
   mmRebate: num('MM_REBATE', 0.2),
   mmRefill: bool('MM_REFILL', true),
+  mmEvolve: bool('MM_EVOLVE', true),
   mmEvolveEvery: num('MM_EVOLVE_EVERY_WINDOWS', 12),
   ewDecay: 0.99,
   // --- production (real money): off unless MM_LIVE=true, then armed from the dashboard
