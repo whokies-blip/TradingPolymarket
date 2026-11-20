@@ -37,11 +37,13 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 UNIT
-systemctl daemon-reload
-systemctl enable --now colibri
-
 IP=$(curl -fsS --max-time 5 http://169.254.169.254/hetzner/v1/metadata/public-ipv4 || curl -fsS --max-time 5 https://api.ipify.org)
 HOST="${IP//./-}.sslip.io"
+# colibri only answers the host names it knows: allow the public address Caddy forwards.
+mkdir -p /etc/systemd/system/colibri.service.d
+printf '[Service]\nEnvironment=COLI_ALLOWED_HOSTS=%s\n' "$HOST" > /etc/systemd/system/colibri.service.d/host.conf
+systemctl daemon-reload
+systemctl enable --now colibri
 HASH=$(caddy hash-password --plaintext "$PASS")
 printf '%s {\n  basicauth {\n    admin %s\n  }\n  reverse_proxy 127.0.0.1:8000\n}\n' "$HOST" "$HASH" > /etc/caddy/Caddyfile
 systemctl restart caddy
