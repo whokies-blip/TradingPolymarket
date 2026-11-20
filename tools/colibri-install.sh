@@ -22,6 +22,11 @@ DIR="$HOME_DIR/colibri"
 [ -d "$DIR/.git" ] || $RUN git clone https://github.com/JustVugg/colibri "$DIR"
 cd "$DIR"
 $RUN env HOME="$HOME_DIR" python3 c/coli setup --yes --model qwen36-35b --no-start --no-browser
+# The web dashboard is not in a source checkout: build it if the setup could not fetch it.
+if [ ! -f "$DIR/web/dist/index.html" ]; then
+  command -v npm >/dev/null || apt-get install -y nodejs npm
+  (cd "$DIR/web" && $RUN env HOME="$HOME_DIR" npm ci --no-audit --no-fund && $RUN env HOME="$HOME_DIR" npm run build)
+fi
 
 cat > /etc/systemd/system/colibri.service <<UNIT
 [Unit]
